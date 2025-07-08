@@ -3306,7 +3306,7 @@ elif view_level == "Sub Strategies":
         with col1:
             if st.button("Load Monthly RoA Total - Correct.xlsx", key="load_monthly_roa_substrategy"):
                 try:
-                    file_path = r"C:\Users\bwilzbach\CascadeProjects\Monthly RoA Total - Correct.xlsx"
+                    file_path = r"I:\BW Code\CashDragProject\portfolio_optimizer_streamlit\Monthly RoA Total - Correct.xlsx"
                     # print(f"Attempting to load file directly from: {file_path}") # Removed debug print
                     monthly_roa_data = pd.read_excel(file_path)
                     
@@ -3329,6 +3329,9 @@ elif view_level == "Sub Strategies":
                 except Exception as e:
                     st.error(f"Error loading file: {e}")
                     # print(f"Error loading Monthly RoA Total - Correct.xlsx: {e}") # Removed debug print
+            
+            # Add explanation text under the button
+            st.markdown("<div style='font-size:0.85em;color:#666;margin-top:5px;'>For Custom Data Analysis, Upload Template with User RoA Assumptions</div>", unsafe_allow_html=True)
         
         with col2:
             if st.button("Debug Substrategy Optimization", key="debug_substrat_opt_v2"):
