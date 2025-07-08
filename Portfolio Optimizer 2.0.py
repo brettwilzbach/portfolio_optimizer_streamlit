@@ -1182,10 +1182,10 @@ def load_monthly_roa_data():
         print(f"Loading monthly RoA data for period: {period}")
         # Try multiple possible file paths
         possible_paths = [
-            "Monthly RoA Total - Correct.xlsx",
-            os.path.join(os.getcwd(), "Monthly RoA Total - Correct.xlsx"),
-            "C:/Users/bwilzbach/CascadeProjects/Monthly RoA Total - Correct.xlsx",
-            "C:/Users/bwilzbach/Desktop/Cash Drag Project/Monthly RoA Total - Correct.xlsx"
+            "Aggregate Monthly RoA.xlsx",
+            os.path.join(os.getcwd(), "Aggregate Monthly RoA.xlsx"),
+            "C:/Users/bwilzbach/CascadeProjects/Aggregate Monthly RoA.xlsx",
+            "C:/Users/bwilzbach/Desktop/Cash Drag Project/Aggregate Monthly RoA.xlsx"
         ]
         
         file_path = None
@@ -1322,6 +1322,9 @@ default_weights = {
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Efficient Frontier Data")
 monthly_data_file = st.sidebar.file_uploader("Upload Monthly RoA Data", type=["csv", "xlsx", "xls"])
+
+# Add note about custom data analysis template
+st.sidebar.markdown("For Custom Data Analysis, Upload Template with User RoA Assumptions")
 
 # Removed download template button
 
