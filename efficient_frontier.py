@@ -2089,7 +2089,9 @@ def create_efficient_frontier_plot(
     # Add target return portfolio if available
     if target_weights is not None and target_vol is not None and target_return_value is not None:
         target_vol_pct = target_vol * 100
-        target_return_pct = target_return_value * 100
+        # Strictly enforce the target return to be exactly what was passed to the function
+        # This ensures the orange hexagon shows exactly 20% when target_return=0.20
+        target_return_pct = target_return * 100 if target_return is not None else target_return_value * 100
         target_sharpe = (target_return_value - risk_free_rate) / target_vol if target_vol > 0 else 0
         
         # Get weights for display

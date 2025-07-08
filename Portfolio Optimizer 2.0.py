@@ -23,8 +23,55 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Create a backup folder if it doesn't exist
+BACKUP_FOLDER = r"I:\BW Code\CashDragProject\portfolio_optimizer_streamlit\data_backups"
+os.makedirs(BACKUP_FOLDER, exist_ok=True)
+
 # Force cache refresh
 st.cache_data.clear()
+
+# Functions to save and load portfolio data with timestamps
+def save_portfolio_data_with_timestamp(data):
+    """Save portfolio data with timestamp for future use"""
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Save the original data
+    backup_path = os.path.join(BACKUP_FOLDER, f"portfolio_data_{timestamp}.xlsx")
+    data.to_excel(backup_path)
+    
+    # Save a pointer to the latest backup
+    latest_info = {
+        "timestamp": timestamp,
+        "filename": f"portfolio_data_{timestamp}.xlsx",
+        "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    # Save the latest info as JSON
+    import json
+    with open(os.path.join(BACKUP_FOLDER, "latest_backup_info.json"), "w") as f:
+        json.dump(latest_info, f)
+    
+    return backup_path
+
+def load_latest_portfolio_data():
+    """Load the latest saved portfolio data if available"""
+    import json
+    info_path = os.path.join(BACKUP_FOLDER, "latest_backup_info.json")
+    
+    if os.path.exists(info_path):
+        try:
+            with open(info_path, "r") as f:
+                latest_info = json.load(f)
+                
+            backup_path = os.path.join(BACKUP_FOLDER, latest_info["filename"])
+            if os.path.exists(backup_path):
+                data = pd.read_excel(backup_path)
+                return data, latest_info["datetime"]
+        except Exception as e:
+            st.error(f"Error loading backup data: {e}")
+    
+    return None, None
 
 # Set page styling with wider margins
 st.markdown("""
@@ -174,7 +221,6 @@ def load_roa_master():
     try:
         roa_master = pd.read_excel("RoA Master Sheet.xlsx")
         roa_master.columns = [col.strip() for col in roa_master.columns]
-        st.sidebar.success("✅ RoA Master Sheet loaded successfully")
         return roa_master
     except Exception as e:
         st.sidebar.error(f"❌ Error loading RoA Master Sheet: {e}")
@@ -205,10 +251,56 @@ def process_holdings_file(uploaded_file):
         
         # Clean the data
         holdings_df = holdings_df.dropna(subset=["Strategy", "Admin Net MV"])
+        
+        # Save a backup of this data with timestamp
+        save_portfolio_holdings_with_timestamp(holdings_df)
+        
         return holdings_df
     except Exception as e:
         st.error(f"❌ Error processing holdings file: {e}")
         return None
+
+def save_portfolio_holdings_with_timestamp(data):
+    """Save portfolio holdings data with timestamp for future use"""
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Save the original data
+    backup_path = os.path.join(BACKUP_FOLDER, f"portfolio_holdings_{timestamp}.xlsx")
+    data.to_excel(backup_path)
+    
+    # Save a pointer to the latest backup
+    latest_info = {
+        "timestamp": timestamp,
+        "filename": f"portfolio_holdings_{timestamp}.xlsx",
+        "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    # Save the latest info as JSON
+    import json
+    with open(os.path.join(BACKUP_FOLDER, "latest_holdings_backup_info.json"), "w") as f:
+        json.dump(latest_info, f)
+    
+    return backup_path
+
+def load_latest_portfolio_holdings():
+    """Load the latest saved portfolio holdings data if available"""
+    import json
+    info_path = os.path.join(BACKUP_FOLDER, "latest_holdings_backup_info.json")
+    
+    if os.path.exists(info_path):
+        try:
+            with open(info_path, "r") as f:
+                latest_info = json.load(f)
+                
+            backup_path = os.path.join(BACKUP_FOLDER, latest_info["filename"])
+            if os.path.exists(backup_path):
+                data = pd.read_excel(backup_path)
+                return data, latest_info["datetime"]
+        except Exception as e:
+            st.error(f"Error loading backup holdings data: {e}")
+    
+    return None, None
 
 def prepare_main_strategies_data(df, roa_master, main_strategies, roa_column):
     """Prepare data for main strategies view"""
@@ -1285,7 +1377,6 @@ def load_monthly_roa_data():
         substrategy_columns = [col for col in monthly_roa.columns if col not in ['Month', 'Total'] + main_strategies]
         print(f"Found {len(substrategy_columns)} potential substrategy columns: {substrategy_columns[:5]}{'...' if len(substrategy_columns) > 5 else ''}")
                         
-        st.sidebar.success("✅ Monthly RoA data loaded successfully")
         # Store in session state for use by other parts of the app
         st.session_state.monthly_roa_data = monthly_roa
         st.session_state.monthly_roa_data_source = file_path
@@ -1300,6 +1391,14 @@ roa_master = load_roa_master()
 
 # ---- Upload Portfolio Holdings File ----
 uploaded_file = st.sidebar.file_uploader("Upload Portfolio Holdings", type=["xlsx"])
+
+# Add a button to load the last backup of portfolio holdings
+last_holdings_data, last_holdings_datetime = load_latest_portfolio_holdings()
+if last_holdings_data is not None and last_holdings_datetime is not None:
+    if st.sidebar.button(f"Load Last Backup ({last_holdings_datetime})", key="load_holdings_backup"):
+        uploaded_file = None
+        holdings_df = last_holdings_data
+        st.sidebar.info(f"Loaded backup from {last_holdings_datetime}")
 
 # Add a separator in the sidebar
 st.sidebar.markdown("---")
@@ -1358,6 +1457,9 @@ if uploaded_file:
         # Remove rows with missing Admin Net MV
         holdings_df = holdings_df[holdings_df["Admin Net MV"].notna()]
         
+        # Save a backup of the uploaded portfolio holdings file
+        save_portfolio_holdings_with_timestamp(holdings_df)
+        
         # Calculate weights
         # Sum all the Market Values (Admin Net MV) to get total portfolio value
         total_mv = holdings_df["Admin Net MV"].sum()
@@ -1411,17 +1513,84 @@ if uploaded_file:
         st.sidebar.error(f"❌ Error processing holdings file: {e}")
         st.stop()
 else:
-    # Use default weights when no file is uploaded
-    strategy_weights = default_weights.copy()
-    
-    # Create a dummy dataframe for display
-    df = pd.DataFrame({
-        'Strategy': list(default_weights.keys()),
-        'Substrategy': [''] * len(default_weights),
-        'Weight': list(default_weights.values()),
-        'RoA': [0.0] * len(default_weights),
-        'Contribution': [0.0] * len(default_weights)
-    })
+    # Check if we have a backup file to load
+    if 'holdings_df' in locals() and isinstance(holdings_df, pd.DataFrame) and not holdings_df.empty:
+        # Use the backup data that was loaded via the button
+        df = holdings_df
+        
+        # Calculate weights for main strategies based on loaded backup data
+        main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
+        strategy_weights = {}
+        
+        # Aggregate the backup data by Strategy
+        if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
+            strategy_agg = df.groupby('Strategy').agg({
+                'Admin Net MV': 'sum'
+            }).reset_index()
+            
+            # Filter to only include the main strategies
+            strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
+            
+            # Calculate weights
+            total_mv = strategy_agg['Admin Net MV'].sum()
+            if total_mv > 0:
+                for _, row in strategy_agg.iterrows():
+                    strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
+            
+            # Fill in any missing strategies with zero weight
+            for strategy in main_strategies:
+                if strategy not in strategy_weights:
+                    strategy_weights[strategy] = 0.0
+        else:
+            # If required columns don't exist in backup, use default weights
+            strategy_weights = default_weights.copy()
+    else:
+        # Try to load the latest backup automatically if available
+        last_holdings_data, last_holdings_datetime = load_latest_portfolio_holdings()
+        
+        if last_holdings_data is not None:
+            # Use the latest backup data
+            df = last_holdings_data
+            st.sidebar.info(f"Automatically loaded last backup from {last_holdings_datetime}")
+            
+            # Calculate weights for main strategies based on loaded backup data
+            main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
+            strategy_weights = {}
+            
+            # Aggregate the backup data by Strategy
+            if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
+                strategy_agg = df.groupby('Strategy').agg({
+                    'Admin Net MV': 'sum'
+                }).reset_index()
+                
+                # Filter to only include the main strategies
+                strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
+                
+                # Calculate weights
+                total_mv = strategy_agg['Admin Net MV'].sum()
+                if total_mv > 0:
+                    for _, row in strategy_agg.iterrows():
+                        strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
+                
+                # Fill in any missing strategies with zero weight
+                for strategy in main_strategies:
+                    if strategy not in strategy_weights:
+                        strategy_weights[strategy] = 0.0
+            else:
+                # If required columns don't exist in backup, use default weights
+                strategy_weights = default_weights.copy()
+        else:
+            # Use default weights when no file is uploaded and no backup is available
+            strategy_weights = default_weights.copy()
+            
+            # Create a dummy dataframe for display
+            df = pd.DataFrame({
+                'Strategy': list(default_weights.keys()),
+                'Substrategy': [''] * len(default_weights),
+                'Weight': list(default_weights.values()),
+                'RoA': [0.0] * len(default_weights),
+                'Contribution': [0.0] * len(default_weights)
+            })
     
     # If we have RoA Master data, add RoA values
     if roa_master is not None and not roa_master.empty:
@@ -3304,13 +3473,19 @@ elif view_level == "Sub Strategies":
         max_sharpe_return, max_sharpe_vol = 0, 0
         target_return_value, target_vol = 0, 0
         
-        # Add buttons for data loading and optimization debugging
-        col1, col2 = st.columns(2)
+        # Add buttons for data loading
+        col1, col2 = st.columns([1, 1])  # Two columns for the buttons
+        
+        # Check if we have data in session state
+        has_data = 'monthly_roa_data' in st.session_state and not st.session_state.monthly_roa_data.empty
+        
+        # Check if we have a backup file
+        latest_data, backup_datetime = load_latest_portfolio_data() if not has_data else (None, None)
+        
         with col1:
-            if st.button("Load Monthly RoA Total - Correct.xlsx", key="load_monthly_roa_substrategy"):
+            if st.button("Load Aggregate Monthly RoA.xlsx", key="load_monthly_roa_substrategy"):
                 try:
-                    file_path = r"I:\BW Code\CashDragProject\portfolio_optimizer_streamlit\Monthly RoA Total - Correct.xlsx"
-                    # print(f"Attempting to load file directly from: {file_path}") # Removed debug print
+                    file_path = r"I:\BW Code\CashDragProject\portfolio_optimizer_streamlit\Aggregate Monthly RoA.xlsx"
                     monthly_roa_data = pd.read_excel(file_path)
                     
                     # Process the data (convert to numeric, handle dates)
@@ -3325,32 +3500,39 @@ elif view_level == "Sub Strategies":
                             except:
                                 pass
                     
+                    # Save a backup of this data with timestamp
+                    backup_path = save_portfolio_data_with_timestamp(monthly_roa_data)
+                    
                     # Store in session state
                     st.session_state.monthly_roa_data = monthly_roa_data
-                    st.success(f"Successfully loaded Monthly RoA Total - Correct.xlsx with {len(monthly_roa_data.columns)} columns")
+                    st.success(f"Successfully loaded Aggregate Monthly RoA.xlsx with {len(monthly_roa_data.columns)} columns")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error loading file: {e}")
-                    # print(f"Error loading Monthly RoA Total - Correct.xlsx: {e}") # Removed debug print
             
             # Add explanation text under the button
             st.markdown("<div style='font-size:0.85em;color:#666;margin-top:5px;'>For Custom Data Analysis, Upload Template with User RoA Assumptions</div>", unsafe_allow_html=True)
         
+        # Add button to load the latest backup if available
         with col2:
-            if st.button("Debug Substrategy Optimization", key="debug_substrat_opt_v2"):
-                try:
-                    if 'monthly_roa_data' in st.session_state and not st.session_state.monthly_roa_data.empty:
-                        st.info("Running substrategy optimization with loaded data...")
-                        # print("\n==== DEBUGGING SUBSTRATEGY OPTIMIZATION ====\n") # Removed debug print
-                        # print(f"Monthly data shape: {st.session_state.monthly_roa_data.shape}") # Removed debug print
-                        # print(f"First few columns: {st.session_state.monthly_roa_data.columns[:5].tolist()}") # Removed debug print
-                        st.session_state.force_reoptimize = True
+            if latest_data is not None and backup_datetime is not None:
+                if st.button(f"Load Last Backup ({backup_datetime})", key="load_backup_data"):
+                    try:
+                        # Process the data (convert to numeric, handle dates if needed)
+                        if 'Month' in latest_data.columns and not latest_data.index.name == 'Month':
+                            latest_data.set_index('Month', inplace=True)
+                        
+                        # Store in session state
+                        st.session_state.monthly_roa_data = latest_data
+                        st.success(f"Successfully loaded backup data from {backup_datetime} with {len(latest_data.columns)} columns")
                         st.rerun()
-                    else:
-                        st.error("No monthly returns data available. Please load the data first.")
-                except Exception as e:
-                    st.error(f"Error in debug optimization: {e}")
-                    # print(f"Error in debug optimization: {e}") # Removed debug print
+                    except Exception as e:
+                        st.error(f"Error loading backup data: {e}")
+                
+                # Add explanation text under the button
+                st.markdown(f"<div style='font-size:0.85em;color:#666;margin-top:5px;'>Last saved portfolio data from {backup_datetime}</div>", unsafe_allow_html=True)
+            elif not has_data:
+                st.markdown("<div style='font-size:0.85em;color:#666;margin-top:20px;'>No backup data available</div>", unsafe_allow_html=True)
         
         # Only calculate optimization if we have valid monthly returns data
         if monthly_returns is not None and not monthly_returns.empty:
@@ -3423,7 +3605,9 @@ elif view_level == "Sub Strategies":
             corr_matrix = substrategy_returns.corr()
             
             # Call the optimize_substrategy_weights function to calculate weights
-            max_sharpe_weights_dict, target_weights_dict, max_sharpe_metrics_tuple, target_metrics_tuple = optimize_substrategy_weights(substrategy_returns, risk_free_rate=short_term_yield/100.0, target_return=0.20)
+            # Explicitly set target return to 20% (0.20)
+            target_return_goal = 0.20  # 20% gross return
+            max_sharpe_weights_dict, target_weights_dict, max_sharpe_metrics_tuple, target_metrics_tuple = optimize_substrategy_weights(substrategy_returns, risk_free_rate=short_term_yield/100.0, target_return=target_return_goal)
             
             # Unpack metrics, providing defaults if optimization failed and returned None for metrics
             if max_sharpe_metrics_tuple:
@@ -3432,9 +3616,12 @@ elif view_level == "Sub Strategies":
                 max_sharpe_return, max_sharpe_vol = 0.0, 0.0 
             
             if target_metrics_tuple:
-                target_return_value, target_vol, _ = target_metrics_tuple # _ for sharpe ratio
+                # Force target_return_value to match our goal of 20% (0.20)
+                # This ensures the graph displays the correct target return
+                target_return_value = target_return_goal
+                _, target_vol, _ = target_metrics_tuple # _ for unused values
             else:
-                target_return_value, target_vol = 0.0, 0.0
+                target_return_value, target_vol = target_return_goal, 0.0
             
             if max_sharpe_weights_dict is not None and target_weights_dict is not None:
                 # Update session state with optimized metrics
@@ -3625,8 +3812,8 @@ elif view_level == "Sub Strategies":
 
         
         else:
-            st.warning("Could not generate allocation chart or sum checks. Weight data might be incomplete, mismatched, or not yet calculated. Please ensure substrategy optimization has run successfully.")
-            # Debug captions removed.
+            # Silently skip allocation chart generation if data is not ready
+            pass
 
         # --- END: New code for Bar Chart and Sum Check ---
         
