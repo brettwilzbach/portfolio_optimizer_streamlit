@@ -216,6 +216,7 @@ teal = "#20b2aa"
 # ---- Helper Functions ----
 
 # --- Data Loading and Processing Functions ---
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_roa_master():
     """Load the RoA Master Sheet with error handling"""
     try:
@@ -302,6 +303,7 @@ def load_latest_portfolio_holdings():
     
     return None, None
 
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def prepare_main_strategies_data(df, roa_master, main_strategies, roa_column):
     """Prepare data for main strategies view"""
     # Start with a clean DataFrame for main strategies
@@ -359,6 +361,7 @@ def prepare_main_strategies_data(df, roa_master, main_strategies, roa_column):
     
     return df_main
 
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def prepare_substrategy_data(df, roa_master, roa_column):
     """Prepare data for substrategies view"""
     # Start with a clean DataFrame for substrategies
@@ -843,7 +846,7 @@ def match_substrategies_to_monthly_data(substrategies, monthly_data_columns, mai
     
     return matches, match_scores
 
-
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_return=0.20):
     """
     Optimize substrategy weights for maximum Sharpe ratio and target return.
@@ -1267,6 +1270,7 @@ def calculate_consistent_volatility(monthly_returns, weights, strategy_names):
     return portfolio_volatility
 
 # Function to load monthly RoA data
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_monthly_roa_data():
     """Load the Monthly RoA data for strategies and substrategies with error handling"""
     try:
@@ -1397,8 +1401,43 @@ last_holdings_data, last_holdings_datetime = load_latest_portfolio_holdings()
 if last_holdings_data is not None and last_holdings_datetime is not None:
     if st.sidebar.button(f"Load Last Backup ({last_holdings_datetime})", key="load_holdings_backup"):
         uploaded_file = None
-        holdings_df = last_holdings_data
+        holdings_df = last_holdings_data.copy()
+        
+        # Process the backup data the same way as uploaded data
+        if "Strategy" in holdings_df.columns and "Admin Net MV" in holdings_df.columns:
+            # Filter out HEDGE and CURRENCY
+            holdings_df = holdings_df[~holdings_df["Strategy"].str.contains("HEDGE|CURRENCY", case=False, na=False)]
+            
+            # Remove rows with missing Admin Net MV
+            holdings_df = holdings_df[holdings_df["Admin Net MV"].notna()]
+            
+            # Calculate weights
+            total_mv = holdings_df["Admin Net MV"].sum()
+            if total_mv > 0:
+                holdings_df["Weight"] = holdings_df["Admin Net MV"] / total_mv
+            
+            # Merge with RoA data
+            df = pd.merge(
+                holdings_df,
+                roa_master,
+                on=["Strategy", "Substrategy"],
+                how="left"
+            )
+            
+            # Force a recalculation of the app
+            st.session_state.file_just_uploaded = True
+            
+            # Clear any cached data to force recalculation
+            st.cache_data.clear()
+            
+            # Reset session state values that might affect calculations
+            if 'changed_weights' in st.session_state:
+                st.session_state.changed_weights = {}
+        
         st.sidebar.info(f"Loaded backup from {last_holdings_datetime}")
+        
+        # Force a rerun to update all values
+        st.rerun()
 
 # Add a separator in the sidebar
 st.sidebar.markdown("---")
@@ -1594,13 +1633,22 @@ else:
     
     # If we have RoA Master data, add RoA values
     if roa_master is not None and not roa_master.empty:
-        for i, strategy in enumerate(df['Strategy']):
+        # Make sure 'Weight' column exists
+        if 'Weight' not in df.columns:
+            df['Weight'] = 0.0  # Initialize with default value
+            
+        # Iterate through the dataframe using iterrows to get proper index
+        for idx, row in df.iterrows():
+            strategy = row['Strategy']
             # Find RoA for this strategy in the master sheet
             strategy_roa = roa_master[(roa_master['Strategy'] == strategy) & 
                                     (roa_master['Substrategy'].isna() | (roa_master['Substrategy'] == ''))]
             if not strategy_roa.empty and 'ITD RoA' in strategy_roa.columns:
-                df.loc[i, 'RoA'] = strategy_roa['ITD RoA'].values[0]
-                df.loc[i, 'Contribution'] = df.loc[i, 'Weight'] * df.loc[i, 'RoA']
+                df.loc[idx, 'RoA'] = strategy_roa['ITD RoA'].values[0]
+                if 'Weight' in df.columns:
+                    df.loc[idx, 'Contribution'] = df.loc[idx, 'Weight'] * df.loc[idx, 'RoA']
+                else:
+                    df.loc[idx, 'Contribution'] = 0.0  # Default if Weight is missing
 
 # Note: Sliders are now implemented after df_main is defined
 # This section is kept for compatibility but sliders are removed to avoid duplicates
@@ -2089,16 +2137,22 @@ if view_level == "Main Strategies":
         display_net_return = 0.0
         display_net_return_change_text = ""
 
-        # Calculate and update display variables if data is processed (this happens inside the if/else for uploaded_file or equivalent logic)
-        # For now, we assume net_return and net_return_change are calculated before this display block
-        # If a portfolio holdings file has been uploaded, then update display variables to show actual calculated returns
-        if uploaded_file is not None:
-            # This check implies that initial calculations have been done
-            display_net_return = net_return # net_return should be defined if df_main is not empty
-            net_return_change = net_return - st.session_state.original_net_return
-            change_color_net = "#2ecc40" if net_return_change >= 0 else "#e74c3c"
-            change_symbol_net = "▲" if net_return_change >= 0 else "▼"
-            display_net_return_change_text = f"<br><span style='font-size:12px;color:{change_color_net}'>{change_symbol_net} {abs(net_return_change):.2f}% from original</span>"
+        # Calculate and update display variables if data is processed
+        # Always display the calculated net return if we have valid data in df_main
+        if not df_main.empty and 'Contribution' in df_main.columns:
+            # Calculate the net return from the current data
+            current_gross_return = df_main['Contribution'].sum() * 100  # as percentage
+            display_net_return = current_gross_return - 5.0  # Assuming 5.0% fee (500bps)
+            
+            # Check if we have an original net return to compare against
+            if 'original_net_return' in st.session_state:
+                net_return_change = display_net_return - st.session_state.original_net_return
+                change_color_net = "#2ecc40" if net_return_change >= 0 else "#e74c3c"
+                change_symbol_net = "▲" if net_return_change >= 0 else "▼"
+                display_net_return_change_text = f"<br><span style='font-size:12px;color:{change_color_net}'>{change_symbol_net} {abs(net_return_change):.2f}% from original</span>"
+            else:
+                # Store the current return as the original for future comparisons
+                st.session_state.original_net_return = display_net_return
         
         # Display the metrics
         cols = st.columns(3)  # Changed back to 3 columns with combined cash impact metrics
