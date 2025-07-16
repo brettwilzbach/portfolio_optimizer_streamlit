@@ -172,14 +172,17 @@ teal = "#20b2aa"
 def load_roa_master():
     """Load the RoA Master Sheet with error handling"""
     try:
-        # Try multiple possible file paths
+        # Try multiple possible file paths - including both local and deployed environments
         possible_paths = [
             "RoA Master Sheet.xlsx",
             os.path.join(os.getcwd(), "RoA Master Sheet.xlsx"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "RoA Master Sheet.xlsx"),
             os.path.join(os.getcwd(), "data", "RoA Master Sheet.xlsx"),
             os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "RoA Master Sheet.xlsx"),
             os.path.join(os.path.dirname(__file__), "data", "RoA Master Sheet.xlsx"),
-            "../data/RoA Master Sheet.xlsx"
+            "../data/RoA Master Sheet.xlsx",
+            "./RoA Master Sheet.xlsx",
+            "./portfolio_optimizer_streamlit/RoA Master Sheet.xlsx"
         ]
         
         file_path = None
@@ -1200,14 +1203,19 @@ def load_monthly_roa_data():
     try:
         # Print the selected RoA period for debugging
         print(f"Loading monthly RoA data for period: {period}")
-        # Try multiple possible file paths
+        # Try multiple possible file paths - including both local and deployed environments
         possible_paths = [
             "Monthly RoA Total - Correct.xlsx",
             os.path.join(os.getcwd(), "Monthly RoA Total - Correct.xlsx"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Monthly RoA Total - Correct.xlsx"),
             os.path.join(os.getcwd(), "data", "Monthly RoA Total - Correct.xlsx"),
             os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "Monthly RoA Total - Correct.xlsx"),
             os.path.join(os.path.dirname(__file__), "data", "Monthly RoA Total - Correct.xlsx"),
-            "../data/Monthly RoA Total - Correct.xlsx"
+            "../data/Monthly RoA Total - Correct.xlsx",
+            "./Monthly RoA Total - Correct.xlsx",
+            "./portfolio_optimizer_streamlit/Monthly RoA Total - Correct.xlsx",
+            "./portfolio_optimizer_streamlit/Aggregate Monthly RoA.xlsx",
+            "./Aggregate Monthly RoA.xlsx"
         ]
         
         file_path = None
