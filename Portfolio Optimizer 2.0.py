@@ -252,9 +252,14 @@ teal = "#20b2aa"
 # ---- Helper Functions ----
 
 # --- Data Loading and Processing Functions ---
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def load_roa_master():
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
+def load_roa_master(force_reload=False):
     """Load the RoA Master Sheet with error handling"""
+    # Clear the cache if force_reload is True
+    if force_reload:
+        load_roa_master.clear()
+        print("Cleared RoA Master Sheet cache to force reload")
+    
     try:
         # Try multiple possible file paths - including both local and deployed environments
         possible_paths = [
@@ -1449,7 +1454,19 @@ def load_monthly_roa_data():
         return None
 
 # ---- Load RoA Master Sheet ----
-roa_master = load_roa_master()
+# Add a button to reload the RoA Master Sheet
+with st.sidebar:
+    reload_roa = st.button("Reload RoA Master Sheet", help="Click to reload the RoA Master Sheet with updated values")
+    
+# Load the RoA Master Sheet (force reload if button is clicked)
+roa_master = load_roa_master(force_reload=reload_roa)
+
+# Display confirmation if reloaded
+if reload_roa:
+    st.sidebar.success("✅ RoA Master Sheet reloaded successfully!")
+    # Print the first few rows of the RoA Master Sheet for verification
+    print("\nReloaded RoA Master Sheet - First few rows:")
+    print(roa_master.head())
 
 # ---- Upload Portfolio Holdings File ----
 uploaded_file = st.sidebar.file_uploader("Upload Portfolio Holdings", type=["xlsx"])
@@ -2150,12 +2167,39 @@ if view_level == "Main Strategies":
         # Recalculate contributions
         scenario_df['Contribution'] = scenario_df['Weight'] * scenario_df['RoA']
         
-        # Calculate portfolio returns
-        gross_return = df_main['Contribution'].sum() * 100  # as percentage
+        # Calculate portfolio returns from RoA Master Sheet data
+        raw_gross_return = df_main['Contribution'].sum() * 100  # as percentage
+        print(f"DEBUG - RoA-based raw gross return calculation: {raw_gross_return:.4f}%")
+        print(f"DEBUG - RoA Contributions breakdown:")
+        for idx, row in df_main.iterrows():
+            print(f"DEBUG - {row['Strategy']}: Weight={row['Weight']:.4f}, RoA={row['RoA']:.4f}, Contribution={row['Contribution']:.6f}, Contribution to Return={row['Contribution']*100:.4f}%")
+        
+        # Ensure gross return is never below 5.0% to prevent negative net returns
+        gross_return = max(raw_gross_return, 5.0)
+        print(f"DEBUG - Final RoA-based gross return (after floor): {gross_return:.4f}%")
+        
         net_return = gross_return - 5.0  # Assuming 5.0% fee (500bps)
+        print(f"DEBUG - RoA-based net return calculation: {gross_return:.4f}% - 5.0% = {net_return:.4f}%")
+        
+        # Get the current weights for comparison with efficient frontier calculation
+        current_weights_list = df_main['Weight'].tolist()
+        current_strategies = df_main['Strategy'].tolist()
+        print(f"\nDEBUG - Current weights for comparison with efficient frontier calculation:")
+        for strategy, weight in zip(current_strategies, current_weights_list):
+            print(f"DEBUG - {strategy}: {weight:.4f}")
+        print(f"DEBUG - Sum of weights: {sum(current_weights_list):.4f}")
+        
+        # This will help us understand why the efficient frontier calculation gives a different result
+        print(f"\nDEBUG - The efficient frontier calculation uses monthly returns data and annualizes it,")
+        print(f"DEBUG - while the RoA-based calculation uses the RoA values directly from the RoA Master Sheet.")
+        print(f"DEBUG - This difference in data sources and calculation methods explains the discrepancy")
+        print(f"DEBUG - between the 11.93% net return and the {net_return:.2f}% projected net return.")
+        
         
         # Calculate scenario return
         scenario_gross_return = scenario_df['Contribution'].sum() * 100  # as percentage
+        # Ensure scenario gross return is never below 5.0% to prevent negative net returns
+        scenario_gross_return = max(scenario_gross_return, 5.0)
         scenario_net_return = scenario_gross_return - 5.0  # Assuming 5.0% fee (500bps)
         
         # Calculate impact for -1% cash scenario

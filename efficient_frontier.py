@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from scipy.optimize import minimize
 import streamlit as st
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=20)
 def generate_synthetic_returns(strategies, annual_returns, volatilities=None, correlation_matrix=None, periods=36):
     """
     Generate synthetic monthly returns based on annual returns and volatilities.
@@ -92,10 +92,46 @@ def generate_synthetic_returns(strategies, annual_returns, volatilities=None, co
     
     return return_df
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=100)
+def calculate_compounded_returns(returns_data):
+    """
+    Calculate compounded (geometric) returns that are properly annualized.
+    
+    Parameters:
+    -----------
+    returns_data : pd.DataFrame
+        DataFrame with monthly returns for each asset
+        
+    Returns:
+    --------
+    pd.Series
+        Annualized compounded returns for each asset
+    """
+    compound_returns = {}
+    
+    for col in returns_data.columns:
+        # Get non-NaN values
+        returns_array = returns_data[col].dropna().values
+        
+        if len(returns_array) > 0:
+            # Calculate compound return: (1+r1)*(1+r2)*...*(1+rn) - 1
+            compound_return = np.prod(1 + returns_array) - 1
+            
+            # Annualize: (1+r)^(12/n) - 1 where n is number of months
+            n_months = len(returns_array)
+            annualized_return = (1 + compound_return) ** (12 / n_months) - 1
+        else:
+            # Fallback if no data
+            annualized_return = 0
+            
+        compound_returns[col] = annualized_return
+    
+    return pd.Series(compound_returns)
+
+@st.cache_data(ttl=3600, max_entries=100)
 def calculate_portfolio_metrics(returns, weights):
     """
-    Calculate portfolio return and volatility.
+    Calculate portfolio metrics: expected return and volatility.
     
     Parameters:
     -----------
@@ -159,11 +195,13 @@ def calculate_portfolio_metrics(returns, weights):
     
     # Print the contribution of each strategy to the portfolio return and volatility
     print("\nStrategy contributions to portfolio:")
-    for i, strategy in enumerate(returns.columns):
-        if i < len(weights):
-            contribution = expected_returns.iloc[i] * weights[i]
-            vol = returns_filled[strategy].std() * np.sqrt(12)
-            print(f"{strategy}: Return {expected_returns.iloc[i]*100:.2f}%, Vol {vol*100:.2f}%, Weight {weights[i]*100:.1f}%, Contrib {contribution*100:.2f}%")
+    max_random_portfolios = min(len(returns.columns), 10)  # Limit to at most 10 random portfolios
+    step_size = max(1, len(returns.columns) // max_random_portfolios)
+    for i in range(0, len(returns.columns), step_size):
+        strategy = returns.columns[i]
+        contribution = expected_returns.iloc[i] * weights[i]
+        vol = returns_filled[strategy].std() * np.sqrt(12)
+        print(f"{strategy}: Return {expected_returns.iloc[i]*100:.2f}%, Vol {vol*100:.2f}%, Weight {weights[i]*100:.1f}%, Contrib {contribution*100:.2f}%")
     
     print(f"\nPortfolio expected return: {portfolio_return*100:.2f}%")
     print(f"Portfolio volatility: {portfolio_volatility*100:.2f}%")
@@ -199,7 +237,7 @@ def calculate_portfolio_metrics(returns, weights):
     
     return portfolio_return, portfolio_volatility
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=100)
 def calculate_portfolio_volatility(returns, weights):
     """
     Calculate portfolio volatility (annualized).
@@ -252,7 +290,7 @@ def calculate_portfolio_volatility(returns, weights):
     
     return portfolio_volatility
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=100)
 def calculate_portfolio_return(returns, weights):
     """
     Calculate portfolio expected return (annualized).
@@ -289,7 +327,7 @@ def calculate_portfolio_return(returns, weights):
     
     return portfolio_return
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=100)
 def calculate_sharpe_ratio(returns, weights, risk_free_rate=0.02):
     """
     Calculate the Sharpe ratio for a portfolio.
@@ -332,7 +370,7 @@ def negative_sharpe_ratio(weights, returns, risk_free_rate):
     """
     return -calculate_sharpe_ratio(returns, weights, risk_free_rate)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=20)
 def maximize_sharpe_ratio(returns, risk_free_rate=0.02):
     """
     Find the portfolio weights that maximize the Sharpe ratio.
@@ -372,7 +410,7 @@ def maximize_sharpe_ratio(returns, risk_free_rate=0.02):
     
     return result['x']
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=20)
 def maximize_return(returns, target_volatility=None):
     """
     Find the portfolio weights that maximize return, optionally with a volatility constraint.
@@ -424,8 +462,8 @@ def maximize_return(returns, target_volatility=None):
     
     return result['x']
 
-@st.cache_data(ttl=3600)
-def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=100, target_return=None, min_data_threshold=0.3, max_money_market=0.5, min_weight_per_asset=0.05, max_weight_per_asset=0.6):
+@st.cache_data(ttl=3600, max_entries=10)
+def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=15, target_return=None, min_data_threshold=0.3, max_money_market=0.5, min_weight_per_asset=0.05, max_weight_per_asset=0.6):
     """
     Generate the efficient frontier with constraints.
     
@@ -846,16 +884,11 @@ def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=100
             else:
                 # Exit the loop
                 iteration = max_iterations
-        
-        # Update max sharpe weights with adjusted weights
-        max_sharpe_weights = adjusted_weights
-        print("\nFinal adjusted Max Sharpe portfolio:")
-        for i, col in enumerate(returns.columns):
-            print(f"{col}: {max_sharpe_weights[i]*100:.2f}%")
-        print(f"Return: {max_sharpe_return:.4f}, Volatility: {max_sharpe_vol:.4f}, Sharpe: {max_sharpe_ratio:.4f}")
-    else:
-        print(f"\nMax Sharpe portfolio volatility ({max_sharpe_vol*100:.2f}%) meets the minimum 3% requirement")
     
+    # Update max sharpe weights with adjusted weights if needed
+    if 'adjusted_weights' in locals():
+        max_sharpe_weights = adjusted_weights
+        
     # Find SHORT TERM index
     short_term_idx = None
     for i, col in enumerate(returns.columns):
@@ -1742,7 +1775,7 @@ def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=100
         target_vol
     )
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, max_entries=10)
 def create_efficient_frontier_plot(
     returns,
     current_weights=None,
@@ -1903,20 +1936,38 @@ def create_efficient_frontier_plot(
         efficient_vols = []
         efficient_returns = []
         
-        # Create a simple efficient frontier using a range of target returns
+        # Create a proper efficient frontier
         if max_sharpe_return is not None and max_return_return is not None:
-            min_return = max_sharpe_return
-            max_return = max_return_return
+            # Ensure we include the max return portfolio explicitly
+            efficient_returns = [max_return_return]
+            efficient_vols = [max_return_vol]
+            
+            # Add the max sharpe portfolio explicitly
+            if max_sharpe_return not in efficient_returns:
+                efficient_returns.append(max_sharpe_return)
+                efficient_vols.append(max_sharpe_vol)
+            
+            # Generate intermediate points for a smooth frontier
+            min_return = min(efficient_returns)
+            max_return = max(efficient_returns)
             target_returns = np.linspace(min_return, max_return, 20)
             
             for target_ret in target_returns:
-                try:
-                    weights = maximize_return(returns, None)  # Simple max return optimization
-                    ret, vol = calculate_portfolio_metrics(returns, weights)
-                    efficient_returns.append(ret)
-                    efficient_vols.append(vol)
-                except:
-                    continue
+                if target_ret not in efficient_returns:  # Skip if we already have this return
+                    try:
+                        # Use minimize_volatility with target_ret constraint
+                        weights = minimize_volatility(returns, target_ret)
+                        ret, vol = calculate_portfolio_metrics(returns, weights)
+                        efficient_returns.append(ret)
+                        efficient_vols.append(vol)
+                    except Exception as e:
+                        print(f"Error generating frontier point for return {target_ret}: {e}")
+                        continue
+            
+            # Sort points by volatility for proper curve drawing
+            points = sorted(zip(efficient_vols, efficient_returns))
+            efficient_vols = [p[0] for p in points]
+            efficient_returns = [p[1] for p in points]
         
         # Set target variables for backward compatibility
         target_weights = max_return_weights
@@ -1971,7 +2022,10 @@ def create_efficient_frontier_plot(
     cash_min = 0.05     # 5% minimum on Cash
     cash_max = 0.10     # 10% maximum on Cash
     
-    for _ in range(num_simulations):
+    # Generate random portfolios for the efficient frontier
+    results = []
+    num_portfolios_to_calculate = min(num_simulations, 50)  # Calculate 50 portfolios for a realistic frontier
+    for _ in range(num_portfolios_to_calculate):
         # Generate constrained random weights
         valid_portfolio = False
         max_attempts = 50  # Limit attempts to find valid portfolio
@@ -2146,6 +2200,10 @@ def create_efficient_frontier_plot(
     if max_sharpe > min_sharpe:  # Avoid division by zero
         normalized_sharpes = (normalized_sharpes - min_sharpe) / (max_sharpe - min_sharpe)
     
+    # Create plot
+    fig = go.Figure()
+    
+    # Add simulation points with color based on Sharpe ratio
     fig.add_trace(go.Scatter(
         x=simulation_vols_pct,
         y=simulation_returns_pct,
