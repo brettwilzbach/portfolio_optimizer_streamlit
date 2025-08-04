@@ -14,6 +14,7 @@ from efficient_frontier import (
     generate_efficient_frontier,
     create_efficient_frontier_plot
 )
+from efficient_frontier_tiered import generate_efficient_frontier_with_tiered_allocation
 
 # Set page configuration for the main app
 st.set_page_config(
@@ -155,16 +156,51 @@ st.sidebar.markdown("### Portfolio Settings")
 # Default SHORT TERM yield is 4.2%
 short_term_yield = st.sidebar.number_input("SHORT TERM Yield (%)", min_value=0.0, max_value=20.0, value=4.2, step=0.1, format="%.2f")
 
-# Add target return constraint option
+# Optimization Constraints section header
 st.sidebar.markdown("### Optimization Constraints")
-use_target_return = st.sidebar.checkbox("Use Target Return Constraint", value=True)
+# Target return constraint removed as requested
+target_return = None
+use_target_return = False
 
-# Only show target return input if checkbox is selected
-if use_target_return:
-    # Default to 15% as requested
-    target_return = st.sidebar.number_input("Target Net Return (%)", min_value=0.0, max_value=30.0, value=15.0, step=0.1, format="%.1f") / 100.0
+# Add Aircraft maximum allocation constraint
+st.sidebar.markdown("### Capacity Constraints")
+use_aircraft_constraint = st.sidebar.checkbox("Apply Aircraft Capacity Constraint", value=True)
+
+# Only show Aircraft max allocation input if checkbox is selected
+if use_aircraft_constraint:
+    aircraft_max_allocation = st.sidebar.number_input("Maximum Aircraft Allocation (%)", 
+                                                     min_value=5.0, 
+                                                     max_value=70.0, 
+                                                     value=25.0, 
+                                                     step=1.0, 
+                                                     format="%.1f") / 100.0
+    st.sidebar.info("This constraint reflects limited available investment opportunities in Aircraft.")
 else:
-    target_return = None
+    aircraft_max_allocation = 0.70  # Default to 70% if constraint not applied
+
+# Add Cash/Short Term allocation constraints
+use_cash_constraint = st.sidebar.checkbox("Apply Cash/Short Term Capacity Constraint", value=True)
+
+# Only show Cash allocation inputs if checkbox is selected
+if use_cash_constraint:
+    cash_min_allocation = st.sidebar.number_input("Minimum Cash/Short Term Allocation (%)", 
+                                                min_value=0.0, 
+                                                max_value=20.0, 
+                                                value=5.0, 
+                                                step=1.0, 
+                                                format="%.1f") / 100.0
+    
+    cash_max_allocation = st.sidebar.number_input("Maximum Cash/Short Term Allocation (%)", 
+                                                min_value=cash_min_allocation*100, 
+                                                max_value=50.0, 
+                                                value=max(10.0, cash_min_allocation*100), 
+                                                step=1.0, 
+                                                format="%.1f") / 100.0
+    
+    st.sidebar.info("These constraints control cash allocation to balance liquidity needs and prevent excess cash drag.")
+else:
+    cash_min_allocation = 0.0  # No minimum if constraint not applied
+    cash_max_allocation = 1.0  # Default to 100% if constraint not applied
 
 # Default values for other optimization variables that might be used elsewhere in the code
 max_money_market = 0.5  # 50%
@@ -220,7 +256,26 @@ teal = "#20b2aa"
 def load_roa_master():
     """Load the RoA Master Sheet with error handling"""
     try:
-        roa_master = pd.read_excel("RoA Master Sheet.xlsx")
+        # Try multiple possible file paths - including both local and deployed environments
+        possible_paths = [
+            "RoA Master Sheet.xlsx",
+            os.path.join(os.getcwd(), "RoA Master Sheet.xlsx"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "RoA Master Sheet.xlsx"),
+            "./portfolio_optimizer_streamlit/RoA Master Sheet.xlsx",
+            "./RoA Master Sheet.xlsx"
+        ]
+        
+        file_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                file_path = path
+                print(f"Found RoA Master Sheet at: {file_path}")
+                break
+                
+        if file_path is None:
+            raise FileNotFoundError(f"RoA Master Sheet not found in any of the expected locations: {possible_paths}")
+            
+        roa_master = pd.read_excel(file_path)
         roa_master.columns = [col.strip() for col in roa_master.columns]
         return roa_master
     except Exception as e:
@@ -1050,7 +1105,7 @@ def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_re
     else:
         max_sharpe_weights = np.array([1./num_assets if num_assets > 0 else 0] * num_assets) # Equal if sum is 0
 
-    # --- DIAGNOSTIC PRINTS FOR 0% WEIGHTS (Target Return Portfolio) --- START
+    # --- DIAGNOSTIC PRINTS FOR 0% WEIGHTS (Maximum Return Portfolio) --- START
     print(f"\nTarget Return for Optimization (annualized): {target_return}")
     print(f"Number of assets for target return opt: {num_assets}")
     # --- END DIAGNOSTIC PRINTS ---\n")
@@ -1276,10 +1331,13 @@ def load_monthly_roa_data():
     try:
         # Print the selected RoA period for debugging
         print(f"Loading monthly RoA data for period: {period}")
-        # Try multiple possible file paths
+        # Try multiple possible file paths - including both local and deployed environments
         possible_paths = [
             "Aggregate Monthly RoA.xlsx",
             os.path.join(os.getcwd(), "Aggregate Monthly RoA.xlsx"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "Aggregate Monthly RoA.xlsx"),
+            "./portfolio_optimizer_streamlit/Aggregate Monthly RoA.xlsx",
+            "./Aggregate Monthly RoA.xlsx",
             "C:/Users/bwilzbach/CascadeProjects/Aggregate Monthly RoA.xlsx",
             "C:/Users/bwilzbach/Desktop/Cash Drag Project/Aggregate Monthly RoA.xlsx"
         ]
@@ -2133,56 +2191,34 @@ if view_level == "Main Strategies":
         # Calculate impact for Cash to 5% scenario
         cash_to_5_impact = cash_to_5_net_return - net_return
         
-        # Initialize display variables for Projected Net Return
-        display_net_return = 0.0
-        display_net_return_change_text = ""
-
-        # Calculate and update display variables if data is processed
-        # Always display the calculated net return if we have valid data in df_main
-        if not df_main.empty and 'Contribution' in df_main.columns:
-            # Calculate the net return from the current data
-            current_gross_return = df_main['Contribution'].sum() * 100  # as percentage
-            display_net_return = current_gross_return - 5.0  # Assuming 5.0% fee (500bps)
-            
-            # Check if we have an original net return to compare against
-            if 'original_net_return' in st.session_state:
-                net_return_change = display_net_return - st.session_state.original_net_return
-                change_color_net = "#2ecc40" if net_return_change >= 0 else "#e74c3c"
-                change_symbol_net = "▲" if net_return_change >= 0 else "▼"
-                display_net_return_change_text = f"<br><span style='font-size:12px;color:{change_color_net}'>{change_symbol_net} {abs(net_return_change):.2f}% from original</span>"
-            else:
-                # Store the current return as the original for future comparisons
-                st.session_state.original_net_return = display_net_return
+        # Create columns for the top metrics
+        cols = st.columns(2)
         
-        # Display the metrics
-        cols = st.columns(3)  # Changed back to 3 columns with combined cash impact metrics
+        # Display the net return at the top of the page
         with cols[0]:
-            # Calculate change from original gross return if sliders have been moved
-            gross_return_change = gross_return - st.session_state.original_gross_return
-            change_color = "#2ecc40" if gross_return_change >= 0 else "#e74c3c"
-            change_symbol = "▲" if gross_return_change >= 0 else "▼"
+            # Calculate portfolio metrics for Current Portfolio using ITD RoA
+            # We'll use the net_return value that's already calculated
+            display_net_return = net_return
+            
+            # Calculate change text if we have an original value to compare against
+            if 'original_net_return' not in st.session_state:
+                st.session_state.original_net_return = display_net_return
+                display_net_return_change_text = ""
+            else:
+                net_return_change = display_net_return - st.session_state.original_net_return
+                change_color = "#2ecc40" if net_return_change >= 0 else "#e74c3c"
+                change_symbol = "▲" if net_return_change >= 0 else "▼"
+                display_net_return_change_text = f"<br><span style='font-size:12px;color:{change_color}'>{change_symbol} {abs(net_return_change):.2f}% from original</span>"
             
             st.markdown(f"""
             <div style='background-color:#f5f9fc;padding:12px;border-radius:6px;text-align:center;'>
-            <span style='font-size:14px;'>Projected Gross Return</span><br>
-            <span style='font-size:22px;font-weight:bold'>{gross_return:.2f}%</span>
-            <br><span style='font-size:12px;color:{change_color}'>{change_symbol} {abs(gross_return_change):.2f}% from original</span>
-            </div>
-            """, unsafe_allow_html=True)
-        with cols[1]:
-            # Calculate change from original net return if sliders have been moved
-            net_return_change = net_return - st.session_state.original_net_return
-            change_color = "#2ecc40" if net_return_change >= 0 else "#e74c3c"
-            change_symbol = "▲" if net_return_change >= 0 else "▼"
-            
-            st.markdown(f"""
-            <div style='background-color:#f5f9fc;padding:12px;border-radius:6px;text-align:center;'>
-            <span style='font-size:14px;'>Projected Net Return</span><br>
+            <span style='font-size:14px;'>Projected Net Return (Annualized)</span><br>
             <span style='font-size:22px;font-weight:bold'>{display_net_return:.2f}%</span>
             {display_net_return_change_text}
             </div>
             """, unsafe_allow_html=True)
-        with cols[2]:
+        
+        with cols[1]:
             # Combine both cash impact metrics in one box
             impact_color = "#2ecc40" if cash_impact >= 0 else "#e74c3c"
             impact_symbol = "▲" if cash_impact >= 0 else "▼"
@@ -2568,50 +2604,62 @@ if view_level == "Main Strategies":
         
         # Constraint-related session state tracking removed as requested
         
-        # Calculate target return gross (add 5% fee to the net target return)
+        # Calculate maximum return portfolio instead of using a target return constraint
         target_return_gross = None
-        if use_target_return and target_return is not None:
-            # Convert net target return to gross target return by adding 5% fee
-            target_return_gross = target_return + 0.05
+        # Set use_target_return to True to ensure we calculate and display the max return portfolio
+        use_target_return = True
             
-        # Only create efficient frontier plot if we have monthly returns data
+        # Placeholder for efficient frontier plot - will be created after calculations
+        
+        # Initialize portfolio metrics
+        portfolio_return, portfolio_vol, sharpe_ratio = 0, 0, 0
+        
+        # Calculate portfolio metrics only if we have valid monthly returns data
         if monthly_returns is not None and not monthly_returns.empty:
-            # Create efficient frontier plot
-            ef_fig = create_efficient_frontier_plot(
-                monthly_returns,
-                current_weights=current_weights,
-                risk_free_rate=short_term_yield / 100.0,
-                strategy_colors=strategy_colors,
-                target_return=target_return_gross if use_target_return else None
-            )
+            portfolio_return, portfolio_vol_original = calculate_portfolio_metrics(monthly_returns, current_weights)
+            # Use weighted average volatility calculation for consistency
+            portfolio_vol = portfolio_vol_original  # Using original volatility calculation
+            sharpe_ratio = (portfolio_return - short_term_yield / 100.0) / portfolio_vol if portfolio_vol > 0 else 0
+        
+        # Display current portfolio metrics
+        st.markdown("### Current Portfolio Metrics")
+        
+        # DEBUG: Print the values used for Current Portfolio Metrics calculation
+        print("\nDEBUG - Current Portfolio Metrics Calculation:")
+        print(f"portfolio_return: {portfolio_return:.6f}")
+        print(f"Gross Return: {portfolio_return*100:.2f}%")
+        print(f"Net Return (after 5% fee): {(portfolio_return-0.05)*100:.2f}%")
+        print(f"Data source: {'Monthly returns data' if monthly_returns is not None else 'Unknown'}")
+        
+        metrics_cols = st.columns(3)
+        with metrics_cols[0]:
+            # Calculate net return (after 5% fee)
+            portfolio_net_return = portfolio_return - 0.05
+            st.metric("Expected Annual Return", f"{portfolio_net_return*100:.2f}%")
             
-            # Display the plot in a column layout for better spacing
-            col1, col2, col3 = st.columns([0.25, 11.5, 0.25])
-            with col2:
-                st.plotly_chart(ef_fig, use_container_width=True)
+            # Update the top-level net return box with this value
+            # Use the same value for the top-level box as the Current Portfolio Metrics
+            top_net_return = portfolio_net_return * 100  # as percentage
             
-            # Initialize portfolio metrics
-            portfolio_return, portfolio_vol, sharpe_ratio = 0, 0, 0
+            # Add JavaScript to update the top box with the Current Portfolio net return
+            st.markdown(f"""
+            <script>
+            document.addEventListener('DOMContentLoaded', function() {{
+                const topNetReturnDiv = document.getElementById('top-net-return');
+                if (topNetReturnDiv) {{
+                    const valueSpan = topNetReturnDiv.querySelector('span:nth-child(3)');
+                    if (valueSpan) {{
+                        valueSpan.innerHTML = '{top_net_return:.2f}%';
+                    }}
+                }}
+            }});
+            </script>
+            """, unsafe_allow_html=True)
             
-            # Calculate portfolio metrics only if we have valid monthly returns data
-            if monthly_returns is not None and not monthly_returns.empty:
-                portfolio_return, portfolio_vol_original = calculate_portfolio_metrics(monthly_returns, current_weights)
-                # Use weighted average volatility calculation for consistency
-                portfolio_vol = portfolio_vol_original  # Using original volatility calculation
-                sharpe_ratio = (portfolio_return - short_term_yield / 100.0) / portfolio_vol if portfolio_vol > 0 else 0
-            
-            # Display current portfolio metrics
-            st.markdown("### Current Portfolio Metrics")
-            metrics_cols = st.columns(3)
-            with metrics_cols[0]:
-                st.metric("Expected Annual Return", f"{portfolio_return*100:.2f}%")
-            with metrics_cols[1]:
-                st.metric("Expected Volatility", f"{portfolio_vol*100:.2f}%")
-            with metrics_cols[2]:
-                st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-        else:
-            # Skip the efficient frontier section if we don't have monthly returns data
-            pass
+        with metrics_cols[1]:
+            st.metric("Expected Volatility", f"{portfolio_vol*100:.2f}%")
+        with metrics_cols[2]:
+            st.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
             
         # Only proceed with optimization if we have monthly returns data
         if monthly_returns is not None:
@@ -2639,20 +2687,90 @@ if view_level == "Main Strategies":
             print(corr_matrix)
             
             # Generate efficient frontier data
-            (
-                efficient_vols,
-                efficient_returns,
-                max_sharpe_weights,
-                max_sharpe_return,
-                max_sharpe_vol,
-                target_weights,
-                target_return_value,
-                target_vol
-            ) = generate_efficient_frontier(
-                monthly_returns,
-                risk_free_rate=short_term_yield / 100.0,
-                target_return=target_return_gross if use_target_return else None
-            )
+            if use_aircraft_constraint or use_cash_constraint:
+                # Use the optimization with capacity constraints
+                constraint_info = []
+                if use_aircraft_constraint:
+                    constraint_info.append(f"Aircraft max: {aircraft_max_allocation*100:.1f}%")
+                if use_cash_constraint:
+                    constraint_info.append(f"Cash min: {cash_min_allocation*100:.1f}%, max: {cash_max_allocation*100:.1f}%")
+                
+                st.info(f"Using optimization with capacity constraints: {', '.join(constraint_info)}")
+                
+                (
+                    efficient_vols,
+                    efficient_returns,
+                    max_sharpe_weights,
+                    max_sharpe_return,
+                    max_sharpe_vol,
+                    target_weights,
+                    target_return_value,
+                    target_vol
+                ) = generate_efficient_frontier_with_tiered_allocation(
+                    monthly_returns,
+                    risk_free_rate=short_term_yield / 100.0,
+                    aircraft_max_allocation=aircraft_max_allocation,
+                    cash_min_allocation=cash_min_allocation,
+                    cash_max_allocation=cash_max_allocation,
+                    target_return=target_return_gross if use_target_return else None
+                )
+            else:
+                # Use the standard optimization
+                (
+                    efficient_vols,
+                    efficient_returns,
+                    max_sharpe_weights,
+                    max_sharpe_return,
+                    max_sharpe_vol,
+                    target_weights,
+                    target_return_value,
+                    target_vol
+                ) = generate_efficient_frontier(
+                    monthly_returns,
+                    risk_free_rate=short_term_yield / 100.0,
+                    target_return=target_return_gross if use_target_return else None
+                )
+            
+            # Now create efficient frontier plot with the calculated values
+            if monthly_returns is not None and not monthly_returns.empty:
+                # Calculate verified metrics for each portfolio type
+                # For current portfolio
+                verify_current_return, verify_current_vol = calculate_portfolio_metrics(monthly_returns, current_weights)
+                verify_current_sharpe = calculate_sharpe_ratio(monthly_returns, current_weights, risk_free_rate=short_term_yield/100.0)
+                
+                # For max sharpe portfolio
+                verify_max_sharpe_return, verify_max_sharpe_vol = calculate_portfolio_metrics(monthly_returns, max_sharpe_weights)
+                verify_max_sharpe_sharpe = calculate_sharpe_ratio(monthly_returns, max_sharpe_weights, risk_free_rate=short_term_yield/100.0)
+                
+                # For max return portfolio
+                verify_max_return_return, verify_max_return_vol = calculate_portfolio_metrics(monthly_returns, target_weights)
+                verify_max_return_sharpe = calculate_sharpe_ratio(monthly_returns, target_weights, risk_free_rate=short_term_yield/100.0)
+                
+                # Print debug info for verification
+                print(f"\nDEBUG - Verified Portfolio Metrics:")
+                print(f"Current: Return={verify_current_return*100:.2f}%, Vol={verify_current_vol*100:.2f}%, Sharpe={verify_current_sharpe:.2f}")
+                print(f"Max Sharpe: Return={verify_max_sharpe_return*100:.2f}%, Vol={verify_max_sharpe_vol*100:.2f}%, Sharpe={verify_max_sharpe_sharpe:.2f}")
+                print(f"Max Return: Return={verify_max_return_return*100:.2f}%, Vol={verify_max_return_vol*100:.2f}%, Sharpe={verify_max_return_sharpe:.2f}")
+                
+                # Create efficient frontier plot with verified values
+                ef_fig = create_efficient_frontier_plot(
+                    monthly_returns,
+                    current_weights=current_weights,
+                    risk_free_rate=short_term_yield / 100.0,
+                    strategy_colors=strategy_colors,
+                    target_return=target_return_gross if use_target_return else None,
+                    max_sharpe_weights=max_sharpe_weights,
+                    max_sharpe_return=verify_max_sharpe_return,  # Use verified values
+                    max_sharpe_vol=verify_max_sharpe_vol,        # Use verified values
+                    max_return_weights=target_weights,
+                    max_return_return=verify_max_return_return,   # Use verified values
+                    max_return_vol=verify_max_return_vol         # Use verified values
+                )
+                
+                # Display the plot in a column layout for better spacing
+                col1, col2, col3 = st.columns([0.25, 11.5, 0.25])
+                with col2:
+                    st.plotly_chart(ef_fig, use_container_width=True)
             
             # Display portfolio metrics
             if use_target_return and target_weights is not None:
@@ -2689,8 +2807,7 @@ if view_level == "Main Strategies":
                 st.markdown(f"""
                 <div style='background-color:#f5f9fc;padding:12px;border-radius:6px;text-align:center;'>
                 <span style='font-size:14px;'>Current Portfolio</span><br>
-                <span style='font-size:18px;font-weight:bold'>Gross Return: {gross_return_display}</span><br>
-                <span style='font-size:16px;'>Net Return: {net_return_display}</span><br>
+                <span style='font-size:18px;font-weight:bold'>Net Return: {net_return_display}</span><br>
                 <span style='font-size:16px;'>Volatility: {vol_display}</span><br>
                 <span style='font-size:16px;'>Sharpe: {sharpe_display}</span>
                 </div>
@@ -2724,8 +2841,7 @@ if view_level == "Main Strategies":
                 st.markdown(f"""
                 <div style='background-color:#f5f9fc;padding:12px;border-radius:6px;text-align:center;'>
                 <span style='font-size:14px;'>Maximum Sharpe Ratio</span><br>
-                <span style='font-size:18px;font-weight:bold'>Gross Return: {max_sharpe_gross_display}</span><br>
-                <span style='font-size:16px;'>Net Return: {max_sharpe_net_display}</span><br>
+                <span style='font-size:18px;font-weight:bold'>Net Return: {max_sharpe_net_display}</span><br>
                 <span style='font-size:16px;'>Volatility: {max_sharpe_vol_display}</span><br>
                 <span style='font-size:16px;'>Sharpe: {max_sharpe_sharpe_display}</span>
                 </div>
@@ -2735,7 +2851,7 @@ if view_level == "Main Strategies":
             if use_target_return and target_weights is not None and len(cols) > 2:
                 with cols[2]:
                     # Print debug info for target return portfolio
-                    print(f"\nDEBUG - Target Return Portfolio from efficient_frontier.py:")
+                    print(f"\nDEBUG - Maximum Return Portfolio from efficient_frontier.py:")
                     print(f"Return: {target_return_value*100:.2f}%, Vol: {target_vol*100:.2f}%, Sharpe: {(target_return_value-(short_term_yield/100.0))/target_vol:.2f}")
                     
                     # Recalculate the metrics using the target_weights to verify
@@ -2751,26 +2867,19 @@ if view_level == "Main Strategies":
                     else:
                         target_sharpe = (target_return_value-(short_term_yield/100.0))/target_vol if target_vol > 0 else 0
                     
-                    # Force the net return to be exactly 15% for display
-                    target_net_return = 0.15  # Hardcoded to 15% net return
-                    
-                    # Force the gross return to be exactly 20% (5% higher than net)
-                    target_return_value = 0.20  # Hardcoded to 20% gross return
-                    
-                    # Recalculate the Sharpe ratio using the hardcoded return value and actual volatility
-                    target_sharpe = (target_return_value - (short_term_yield/100.0)) / target_vol if target_vol > 0 else 0
+                    # Calculate net return (after 5% fee)
+                    target_net_return = target_return_value - 0.05
                     
                     # Handle NaN values for display
-                    target_net_display = "15.00%"  # Always show exactly 15.00%
-                    target_gross_display = "20.00%"  # Always show exactly 20.00%
+                    target_gross_display = f"{target_return_value*100:.2f}%" if not np.isnan(target_return_value) else "0.00%"
+                    target_net_display = f"{target_net_return*100:.2f}%" if not np.isnan(target_net_return) else "0.00%"
                     target_vol_display = f"{target_vol*100:.2f}%" if not np.isnan(target_vol) else "0.00%"
                     target_sharpe_display = f"{target_sharpe:.2f}" if not np.isnan(target_sharpe) else "0.00"
                     
                     st.markdown(f"""
                     <div style='background-color:#f5f9fc;padding:12px;border-radius:6px;text-align:center;'>
-                    <span style='font-size:14px;'>Target Return Portfolio</span><br>
+                    <span style='font-size:14px;'>Maximum Return Portfolio</span><br>
                     <span style='font-size:18px;font-weight:bold'>Net Return: {target_net_display}</span><br>
-                    <span style='font-size:16px;'>Gross Return: {target_gross_display}</span><br>
                     <span style='font-size:16px;'>Volatility: {target_vol_display}</span><br>
                     <span style='font-size:16px;'>Sharpe: {target_sharpe_display}</span>
                     </div>
@@ -2838,21 +2947,41 @@ if view_level == "Main Strategies":
                 # Recalculate the efficient frontier with only the valid strategies
                 try:
                     # Re-run the efficient frontier calculation with only valid data
-                    (
-                        efficient_vols,
-                        efficient_returns,
-                        max_sharpe_weights,
-                        max_sharpe_return,
-                        max_sharpe_vol,
-                        target_weights,
-                        target_return_value,
-                        target_vol
-                    ) = generate_efficient_frontier(
-                        monthly_returns,
-                        risk_free_rate=short_term_yield / 100.0,
-                        num_portfolios=100,
-                        target_return=target_return_gross if use_target_return else None
-                    )
+                    if use_aircraft_constraint:
+                        # Use the two-stage optimization with Aircraft capacity constraint
+                        st.info(f"Using two-stage optimization with Aircraft capacity constraint of {aircraft_max_allocation*100:.1f}%")
+                        (
+                            efficient_vols,
+                            efficient_returns,
+                            max_sharpe_weights,
+                            max_sharpe_return,
+                            max_sharpe_vol,
+                            target_weights,
+                            target_return_value,
+                            target_vol
+                        ) = generate_efficient_frontier_with_tiered_allocation(
+                            monthly_returns,
+                            risk_free_rate=short_term_yield / 100.0,
+                            aircraft_max_allocation=aircraft_max_allocation,
+                            target_return=target_return_gross if use_target_return else None
+                        )
+                    else:
+                        # Use the standard optimization
+                        (
+                            efficient_vols,
+                            efficient_returns,
+                            max_sharpe_weights,
+                            max_sharpe_return,
+                            max_sharpe_vol,
+                            target_weights,
+                            target_return_value,
+                            target_vol
+                        ) = generate_efficient_frontier(
+                            monthly_returns,
+                            risk_free_rate=short_term_yield / 100.0,
+                            num_portfolios=100,
+                            target_return=target_return_gross if use_target_return else None
+                        )
                 except Exception as e:
                     st.error(f"Error recalculating efficient frontier: {str(e)}")
                     # Create empty arrays as fallback
@@ -2949,13 +3078,9 @@ if view_level == "Main Strategies":
             # Sort by weight (descending)
             max_sharpe_df = max_sharpe_df.sort_values('Weight', ascending=False)
             
-            # Display the optimal portfolios
-            if use_target_return and target_weights is not None:
-                # Use 2 columns for the two portfolios
-                alloc_cols = st.columns(2)
-            else:
-                # Use 1 column when target return is not enabled
-                alloc_cols = st.columns(1)
+            # Display the optimal portfolios side by side
+            # Use 2 columns to display both Maximum Sharpe Ratio and Maximum Return Portfolio weights
+            alloc_cols = st.columns(2)
                 
             with alloc_cols[0]:
                 st.markdown("<b>Maximum Sharpe Ratio Weights</b>", unsafe_allow_html=True)
@@ -2970,15 +3095,49 @@ if view_level == "Main Strategies":
                 styled_sharpe = max_sharpe_df.style.format({'Weight': '{:.2f}%'})
                 styled_sharpe = styled_sharpe.applymap(lambda x: color_weights(x), subset=['Weight'])
                 st.dataframe(styled_sharpe, height=200)
+            
+            # Add Maximum Return Portfolio weights
+            with alloc_cols[1]:
+                st.markdown("<b>Maximum Return Portfolio Weights</b>", unsafe_allow_html=True)
                 
-            # Display target return weights if available
-            if use_target_return and target_weights is not None and len(alloc_cols) > 1:
-                with alloc_cols[1]:
-                    st.markdown(f"<b>Target {target_return*100:.1f}% Net Return Weights</b>", unsafe_allow_html=True)
+                # Create Maximum Return Portfolio DataFrame
+                try:
+                    # Double check that arrays have the same length before creating DataFrame
+                    strategy_names = [strategy_mapping.get(col, col) for col in monthly_strategies]
+                    weights = [w * 100 for w in target_weights]
                     
-                    styled_target = target_df.style.format({'Weight': '{:.2f}%'})
-                    styled_target = styled_target.applymap(lambda x: color_weights(x), subset=['Weight'])
-                    st.dataframe(styled_target, height=200)
+                    if len(strategy_names) != len(weights):
+                        st.error(f"Length mismatch in max return DataFrame creation: strategies={len(strategy_names)}, weights={len(weights)}")
+                        # Use the shorter length to avoid errors
+                        min_len = min(len(strategy_names), len(weights))
+                        max_return_df = pd.DataFrame({
+                            'Strategy': strategy_names[:min_len],
+                            'Weight': weights[:min_len]
+                        })
+                    else:
+                        max_return_df = pd.DataFrame({
+                            'Strategy': strategy_names,
+                            'Weight': weights
+                        })
+                        
+                    # Add missing strategies with 0% weight
+                    if missing_strategies:
+                        for missing in missing_strategies:
+                            max_return_df = pd.concat([max_return_df, pd.DataFrame({'Strategy': [missing], 'Weight': [0.0]})], ignore_index=True)
+                    
+                    # Sort by weight (descending)
+                    max_return_df = max_return_df.sort_values('Weight', ascending=False)
+                    
+                    # Style and display the dataframe
+                    styled_return = max_return_df.style.format({'Weight': '{:.2f}%'})
+                    styled_return = styled_return.applymap(lambda x: color_weights(x), subset=['Weight'])
+                    st.dataframe(styled_return, height=200)
+                except Exception as e:
+                    st.error(f"Error creating max return DataFrame: {str(e)}")
+                    # Create a fallback empty DataFrame
+                    st.info("Maximum Return Portfolio weights could not be calculated.")
+                    max_return_df = pd.DataFrame(columns=['Strategy', 'Weight'])
+                    st.dataframe(max_return_df, height=200)
         else:
             # Display a message when monthly returns data is missing
             st.warning("Monthly RoA data is required for efficient frontier analysis. Please upload a valid Monthly RoA file with data for the selected strategies.")
@@ -3001,6 +3160,12 @@ if view_level == "Main Strategies":
         # Calculate correlation matrix
         corr_matrix = monthly_returns.corr()
         
+        # Remove SHORT TERM from correlation matrix as it's riskless
+        short_term_columns = [col for col in corr_matrix.columns if 'SHORT TERM' in col]
+        if short_term_columns:
+            corr_matrix = corr_matrix.drop(short_term_columns, axis=0)
+            corr_matrix = corr_matrix.drop(short_term_columns, axis=1)
+        
         # Map column names to strategy names for better display
         corr_matrix.columns = [strategy_mapping.get(col, col) for col in corr_matrix.columns]
         corr_matrix.index = [strategy_mapping.get(idx, idx) for idx in corr_matrix.index]
@@ -3008,7 +3173,7 @@ if view_level == "Main Strategies":
         # Create heatmap figure
         fig = go.Figure()
         
-        # Add heatmap trace
+        # Add heatmap trace with larger text
         fig.add_trace(go.Heatmap(
             z=corr_matrix.values,
             x=corr_matrix.columns,
@@ -3028,20 +3193,22 @@ if view_level == "Main Strategies":
             colorbar=dict(title='Correlation')
         ))
         
-        # Update layout
+        # Update layout with larger size
         fig.update_layout(
-            height=500,
-            width=700,
+            height=650,  # Increased height
+            width=800,  # Increased width
             title={
                 'text': 'Monthly Returns Correlation',
                 'y': 0.9,
                 'x': 0.5,
                 'xanchor': 'center',
-                'yanchor': 'top'
+                'yanchor': 'top',
+                'font': dict(size=18)  # Larger title font
             },
-            margin=dict(l=50, r=50, t=80, b=50),
-            xaxis=dict(title='', tickangle=-45),
-            yaxis=dict(title=''),
+            margin=dict(l=60, r=60, t=100, b=60),  # Increased margins
+            xaxis=dict(title='', tickangle=-45, tickfont=dict(size=14)),  # Larger tick fonts
+            yaxis=dict(title='', tickfont=dict(size=14)),  # Larger tick fonts
+            font=dict(size=14)  # Larger overall font
         )
         
         # Display the heatmap

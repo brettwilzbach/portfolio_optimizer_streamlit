@@ -3,7 +3,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from scipy.optimize import minimize
+import streamlit as st
 
+@st.cache_data(ttl=3600)
 def generate_synthetic_returns(strategies, annual_returns, volatilities=None, correlation_matrix=None, periods=36):
     """
     Generate synthetic monthly returns based on annual returns and volatilities.
@@ -90,6 +92,7 @@ def generate_synthetic_returns(strategies, annual_returns, volatilities=None, co
     
     return return_df
 
+@st.cache_data(ttl=3600)
 def calculate_portfolio_metrics(returns, weights):
     """
     Calculate portfolio return and volatility.
@@ -196,6 +199,7 @@ def calculate_portfolio_metrics(returns, weights):
     
     return portfolio_return, portfolio_volatility
 
+@st.cache_data(ttl=3600)
 def calculate_portfolio_volatility(returns, weights):
     """
     Calculate portfolio volatility (annualized).
@@ -248,6 +252,7 @@ def calculate_portfolio_volatility(returns, weights):
     
     return portfolio_volatility
 
+@st.cache_data(ttl=3600)
 def calculate_portfolio_return(returns, weights):
     """
     Calculate portfolio expected return (annualized).
@@ -284,6 +289,7 @@ def calculate_portfolio_return(returns, weights):
     
     return portfolio_return
 
+@st.cache_data(ttl=3600)
 def calculate_sharpe_ratio(returns, weights, risk_free_rate=0.02):
     """
     Calculate the Sharpe ratio for a portfolio.
@@ -326,6 +332,7 @@ def negative_sharpe_ratio(weights, returns, risk_free_rate):
     """
     return -calculate_sharpe_ratio(returns, weights, risk_free_rate)
 
+@st.cache_data(ttl=3600)
 def maximize_sharpe_ratio(returns, risk_free_rate=0.02):
     """
     Find the portfolio weights that maximize the Sharpe ratio.
@@ -365,6 +372,7 @@ def maximize_sharpe_ratio(returns, risk_free_rate=0.02):
     
     return result['x']
 
+@st.cache_data(ttl=3600)
 def maximize_return(returns, target_volatility=None):
     """
     Find the portfolio weights that maximize return, optionally with a volatility constraint.
@@ -416,6 +424,7 @@ def maximize_return(returns, target_volatility=None):
     
     return result['x']
 
+@st.cache_data(ttl=3600)
 def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=100, target_return=None, min_data_threshold=0.3, max_money_market=0.5, min_weight_per_asset=0.05, max_weight_per_asset=0.6):
     """
     Generate the efficient frontier with constraints.
@@ -1415,7 +1424,10 @@ def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=100
         print(f"Final target portfolio - Return: {target_return_value:.4f}, Vol: {target_vol:.4f}")
     elif target_return_value is None:
         target_return_value = target_return if target_return is not None else None
-        print(f"Using target return parameter as fallback: {target_return_value:.4f}")
+        if target_return_value is not None:
+            print(f"Using target return parameter as fallback: {target_return_value:.4f}")
+        else:
+            print("No target return specified.")
     
     # Ensure Max Sharpe Ratio is higher than Target Return Sharpe Ratio
     if target_weights is not None and target_vol > 0 and max_sharpe_vol > 0:
@@ -1730,12 +1742,19 @@ def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=100
         target_vol
     )
 
+@st.cache_data(ttl=3600)
 def create_efficient_frontier_plot(
     returns,
     current_weights=None,
     risk_free_rate=0.02,
     strategy_colors=None,
-    target_return=None
+    target_return=None,
+    max_sharpe_weights=None,
+    max_sharpe_return=None,
+    max_sharpe_vol=None,
+    max_return_weights=None,
+    max_return_return=None,
+    max_return_vol=None
 ):
     """
     Create an enhanced interactive efficient frontier plot with simulation points.
@@ -1838,20 +1857,75 @@ def create_efficient_frontier_plot(
                 current_weights = current_weights / np.sum(current_weights)
     
     # Generate efficient frontier with constraints and simulation points
-    (
-        efficient_vols,
-        efficient_returns,
-        max_sharpe_weights,
-        max_sharpe_return,
-        max_sharpe_vol,
-        target_weights,
-        target_return_value,
-        target_vol
-    ) = generate_efficient_frontier(
-        returns, 
-        risk_free_rate=risk_free_rate,
-        target_return=target_return
-    )
+    # Only call generate_efficient_frontier if pre-calculated values are not provided
+    if (max_sharpe_weights is None or max_sharpe_return is None or max_sharpe_vol is None or
+        max_return_weights is None or max_return_return is None or max_return_vol is None):
+        (
+            efficient_vols,
+            efficient_returns,
+            internal_max_sharpe_weights,
+            internal_max_sharpe_return,
+            internal_max_sharpe_vol,
+            internal_target_weights,
+            internal_target_return_value,
+            internal_target_vol
+        ) = generate_efficient_frontier(
+            returns, 
+            risk_free_rate=risk_free_rate,
+            target_return=target_return
+        )
+        
+        # Use internal values only if pre-calculated values are not provided
+        if max_sharpe_weights is None:
+            max_sharpe_weights = internal_max_sharpe_weights
+        if max_sharpe_return is None:
+            max_sharpe_return = internal_max_sharpe_return
+        if max_sharpe_vol is None:
+            max_sharpe_vol = internal_max_sharpe_vol
+        if max_return_weights is None:
+            max_return_weights = internal_target_weights
+        if max_return_return is None:
+            max_return_return = internal_target_return_value
+        if max_return_vol is None:
+            max_return_vol = internal_target_vol
+            
+        # Set target variables for backward compatibility
+        target_weights = internal_target_weights
+        target_return_value = internal_target_return_value
+        target_vol = internal_target_vol
+        
+        print("DEBUG - Using internally calculated values:")
+        print(f"Max Sharpe: Return={max_sharpe_return*100:.2f}%, Vol={max_sharpe_vol*100:.2f}%")
+        print(f"Max Return: Return={max_return_return*100:.2f}%, Vol={max_return_vol*100:.2f}%")
+    else:
+        # When using pre-calculated values, we still need efficient frontier points for the line
+        # Generate a simplified efficient frontier for display purposes only
+        efficient_vols = []
+        efficient_returns = []
+        
+        # Create a simple efficient frontier using a range of target returns
+        if max_sharpe_return is not None and max_return_return is not None:
+            min_return = max_sharpe_return
+            max_return = max_return_return
+            target_returns = np.linspace(min_return, max_return, 20)
+            
+            for target_ret in target_returns:
+                try:
+                    weights = maximize_return(returns, None)  # Simple max return optimization
+                    ret, vol = calculate_portfolio_metrics(returns, weights)
+                    efficient_returns.append(ret)
+                    efficient_vols.append(vol)
+                except:
+                    continue
+        
+        # Set target variables for backward compatibility
+        target_weights = max_return_weights
+        target_return_value = max_return_return
+        target_vol = max_return_vol
+        
+        print("DEBUG - Using pre-calculated values:")
+        print(f"Max Sharpe: Return={max_sharpe_return*100:.2f}%, Vol={max_sharpe_vol*100:.2f}%")
+        print(f"Max Return: Return={max_return_return*100:.2f}%, Vol={max_return_vol*100:.2f}%")
     
     # Calculate current portfolio metrics if weights are provided
     if current_weights is not None:
@@ -1878,10 +1952,93 @@ def create_efficient_frontier_plot(
     np.random.seed(42)  # For reproducibility
     n_assets = len(returns.columns)
     
+    # Find AIRCRAFT index if it exists for constraint application
+    aircraft_idx = None
+    for i, col in enumerate(returns.columns):
+        if 'AIRCRAFT' in col:
+            aircraft_idx = i
+            break
+    
+    # Find SHORT TERM (cash) index if it exists for constraint application
+    cash_idx = None
+    for i, col in enumerate(returns.columns):
+        if 'SHORT TERM' in col:
+            cash_idx = i
+            break
+    
+    # Define constraints for random portfolios
+    aircraft_max = 0.25  # 25% cap on Aircraft
+    cash_min = 0.05     # 5% minimum on Cash
+    cash_max = 0.10     # 10% maximum on Cash
+    
     for _ in range(num_simulations):
-        # Generate random weights
-        weights = np.random.random(n_assets)
-        weights = weights / np.sum(weights)  # Normalize to sum to 1
+        # Generate constrained random weights
+        valid_portfolio = False
+        max_attempts = 50  # Limit attempts to find valid portfolio
+        
+        for _ in range(max_attempts):
+            # Generate initial random weights
+            weights = np.random.random(n_assets)
+            weights = weights / np.sum(weights)  # Normalize to sum to 1
+            
+            # Apply constraints
+            constraints_satisfied = True
+            
+            # Apply Aircraft constraint if needed
+            if aircraft_idx is not None and weights[aircraft_idx] > aircraft_max:
+                constraints_satisfied = False
+            
+            # Apply Cash constraints if needed
+            if cash_idx is not None:
+                if weights[cash_idx] < cash_min or weights[cash_idx] > cash_max:
+                    constraints_satisfied = False
+            
+            if constraints_satisfied:
+                valid_portfolio = True
+                break
+            
+        # If we couldn't generate a valid portfolio randomly, enforce constraints
+        if not valid_portfolio:
+            weights = np.random.random(n_assets)
+            weights = weights / np.sum(weights)  # Initial normalization
+            
+            # Enforce Aircraft constraint
+            if aircraft_idx is not None and weights[aircraft_idx] > aircraft_max:
+                excess = weights[aircraft_idx] - aircraft_max
+                weights[aircraft_idx] = aircraft_max
+                
+                # Redistribute excess to other assets proportionally
+                other_indices = [i for i in range(n_assets) if i != aircraft_idx and i != cash_idx]
+                if other_indices:
+                    for i in other_indices:
+                        weights[i] += excess * weights[i] / sum(weights[j] for j in other_indices)
+            
+            # Enforce Cash constraints
+            if cash_idx is not None:
+                if weights[cash_idx] < cash_min:
+                    # Need to increase cash allocation
+                    shortfall = cash_min - weights[cash_idx]
+                    weights[cash_idx] = cash_min
+                    
+                    # Take from other assets proportionally (except Aircraft)
+                    other_indices = [i for i in range(n_assets) if i != cash_idx and (i != aircraft_idx or weights[i] > aircraft_max)]
+                    if other_indices:
+                        for i in other_indices:
+                            weights[i] -= shortfall * weights[i] / sum(weights[j] for j in other_indices)
+                
+                elif weights[cash_idx] > cash_max:
+                    # Need to decrease cash allocation
+                    excess = weights[cash_idx] - cash_max
+                    weights[cash_idx] = cash_max
+                    
+                    # Redistribute to other assets proportionally (except Aircraft if at max)
+                    other_indices = [i for i in range(n_assets) if i != cash_idx and (i != aircraft_idx or weights[i] < aircraft_max)]
+                    if other_indices:
+                        for i in other_indices:
+                            weights[i] += excess * weights[i] / sum(weights[j] for j in other_indices)
+            
+            # Final normalization to ensure sum is exactly 1
+            weights = weights / np.sum(weights)
         
         # Calculate portfolio metrics
         ret, vol = calculate_portfolio_metrics(returns, weights)
@@ -1973,6 +2130,9 @@ def create_efficient_frontier_plot(
     
     # Create plot
     fig = go.Figure()
+        
+    # Create plot
+    fig = go.Figure()
     
     # Add simulation points but without the text label
     # Convert to percentages for display
@@ -2019,6 +2179,13 @@ def create_efficient_frontier_plot(
         line=dict(color='rgba(0, 0, 0, 0.7)', width=3)
     ))
     
+    # Debug information for strategies and weights
+    print(f"DEBUG - Strategies list length: {len(strategies)}")
+    if max_sharpe_weights is not None:
+        print(f"DEBUG - Max Sharpe weights length: {len(max_sharpe_weights)}")
+    if max_return_weights is not None:
+        print(f"DEBUG - Max Return weights length: {len(max_return_weights)}")
+    
     # Add individual assets with improved styling
     for i, strategy in enumerate(strategies):
         # Skip 1.0 LEGACY ABS F1 as it's an outlier
@@ -2058,12 +2225,43 @@ def create_efficient_frontier_plot(
         ))
     
     # Add maximum Sharpe ratio portfolio with enhanced styling
-    max_sharpe_vol_pct = max_sharpe_vol * 100
-    max_sharpe_return_pct = max_sharpe_return * 100
-    max_sharpe_ratio = (max_sharpe_return - risk_free_rate) / max_sharpe_vol if max_sharpe_vol > 0 else 0
+    # Always use the pre-calculated values (they are guaranteed to be set by now)
+    plot_max_sharpe_weights = max_sharpe_weights
+    plot_max_sharpe_return = max_sharpe_return
+    plot_max_sharpe_vol = max_sharpe_vol
     
-    # Get weights for display
-    max_sharpe_weights_str = '<br>'.join([f'{strategies[i]}: {w*100:.1f}%' for i, w in enumerate(max_sharpe_weights) if w > 0.01])
+    # Verify the values are valid
+    if plot_max_sharpe_vol is None or plot_max_sharpe_return is None:
+        print("WARNING: Max Sharpe values are None, recalculating from weights")
+        if plot_max_sharpe_weights is not None:
+            plot_max_sharpe_return, plot_max_sharpe_vol = calculate_portfolio_metrics(returns, plot_max_sharpe_weights)
+    
+    max_sharpe_vol_pct = plot_max_sharpe_vol * 100
+    max_sharpe_return_pct = plot_max_sharpe_return * 100
+    max_sharpe_ratio = (plot_max_sharpe_return - risk_free_rate) / plot_max_sharpe_vol if plot_max_sharpe_vol > 0 else 0
+    
+    # Create weights display string safely without using strategies list
+    max_sharpe_weights_str = ''
+    try:
+        # Only show weights > 1%
+        significant_weights = [(i, w) for i, w in enumerate(plot_max_sharpe_weights) if w > 0.01]
+        
+        # Create the weights string
+        weight_items = []
+        for i, w in significant_weights:
+            # Safely get strategy name if available
+            if i < len(strategies):
+                strategy_name = strategies[i]
+            else:
+                strategy_name = f"Asset {i}"
+            weight_items.append(f"{strategy_name}: {w*100:.1f}%")
+        
+        max_sharpe_weights_str = '<br>'.join(weight_items)
+    except Exception as e:
+        print(f"Error creating max sharpe weights string: {e}")
+        max_sharpe_weights_str = 'Error displaying weights'
+    
+    print(f"DEBUG - Plotting Max Sharpe: Return={max_sharpe_return_pct:.2f}%, Vol={max_sharpe_vol_pct:.2f}%, Sharpe={max_sharpe_ratio:.2f}")
     
     fig.add_trace(go.Scatter(
         x=[max_sharpe_vol_pct],
@@ -2071,31 +2269,105 @@ def create_efficient_frontier_plot(
         mode='markers+text',
         name='Maximum Sharpe Ratio',
         text=['Max Sharpe'],
-        textposition="top center",
-        textfont=dict(size=10, color='darkgreen'),
+        textposition="top right",
+        textfont=dict(size=14, color='darkgreen', family="Arial Black"),
         marker=dict(
-            size=18,
+            size=25,  # Much larger marker
             color='#2ecc71',  # Bright green
-            symbol='diamond',
-            line=dict(width=2, color='black')
+            symbol='star',  # Star symbol for better visibility
+            line=dict(width=3, color='black')  # Thicker black outline
         ),
         hoverinfo='text',
         hovertext=f'Maximum Sharpe Portfolio<br>Return: {max_sharpe_return_pct:.2f}%<br>Volatility: {max_sharpe_vol_pct:.2f}%<br>Sharpe: {max_sharpe_ratio:.2f}<br><br>Weights:<br>{max_sharpe_weights_str}'
     ))
     
-    # We no longer calculate or display the max return portfolio
-    # This improves chart usability by avoiding extreme scales
+    # Add Maximum Return Portfolio if pre-calculated values are provided
+    if max_return_weights is not None:
+        # Verify the values are valid or recalculate them from weights
+        if max_return_return is None or max_return_vol is None:
+            print("WARNING: Max Return values are None, recalculating from weights")
+            max_return_return, max_return_vol = calculate_portfolio_metrics(returns, max_return_weights)
+        
+        max_return_vol_pct = max_return_vol * 100
+        max_return_return_pct = max_return_return * 100
+        max_return_sharpe = (max_return_return - risk_free_rate) / max_return_vol if max_return_vol > 0 else 0
+        
+        # Create weights display string safely without using strategies list
+        max_return_weights_str = ''
+        try:
+            # Only show weights > 1%
+            significant_weights = [(i, w) for i, w in enumerate(max_return_weights) if w > 0.01]
+            
+            # Create the weights string
+            weight_items = []
+            for i, w in significant_weights:
+                # Safely get strategy name if available
+                if i < len(strategies):
+                    strategy_name = strategies[i]
+                else:
+                    strategy_name = f"Asset {i}"
+                weight_items.append(f"{strategy_name}: {w*100:.1f}%")
+            
+            max_return_weights_str = '<br>'.join(weight_items)
+        except Exception as e:
+            print(f"Error creating max return weights string: {e}")
+            max_return_weights_str = 'Error displaying weights'
+        
+        print(f"DEBUG - Plotting Max Return: Return={max_return_return_pct:.2f}%, Vol={max_return_vol_pct:.2f}%, Sharpe={max_return_sharpe:.2f}")
+        
+        # Ensure the Maximum Return Portfolio is always displayed
+        fig.add_trace(go.Scatter(
+            x=[max_return_vol_pct],
+            y=[max_return_return_pct],
+            mode='markers+text',
+            name='Maximum Return',
+            text=['Max Return'],
+            textposition="top right",
+            textfont=dict(size=14, color='darkblue', family="Arial Black"),
+            marker=dict(
+                size=25,  # Much larger marker
+                color='#3498db',  # Blue
+                symbol='triangle-up',
+                line=dict(width=2, color='black')
+            ),
+            hoverinfo='text',
+            hovertext=f'Maximum Return Portfolio<br>Return: {max_return_return_pct:.2f}%<br>Volatility: {max_return_vol_pct:.2f}%<br>Sharpe: {max_return_sharpe:.2f}<br><br>Weights:<br>{max_return_weights_str}'
+        ))
     
     # Add target return portfolio if available
-    if target_weights is not None and target_vol is not None and target_return_value is not None:
+    # Note: This is now redundant with the Maximum Return Portfolio but kept for backward compatibility
+    if target_weights is not None and target_weights is not max_return_weights:
+        # Verify the values are valid or recalculate them from weights
+        if target_vol is None or target_return_value is None:
+            print("WARNING: Target Return values are None, recalculating from weights")
+            target_return_value, target_vol = calculate_portfolio_metrics(returns, target_weights)
+            
         target_vol_pct = target_vol * 100
         # Strictly enforce the target return to be exactly what was passed to the function
         # This ensures the orange hexagon shows exactly 20% when target_return=0.20
         target_return_pct = target_return * 100 if target_return is not None else target_return_value * 100
         target_sharpe = (target_return_value - risk_free_rate) / target_vol if target_vol > 0 else 0
         
-        # Get weights for display
-        target_weights_str = '<br>'.join([f'{strategies[i]}: {w*100:.1f}%' for i, w in enumerate(target_weights) if w > 0.01])
+        # Create weights display string safely without using strategies list
+        target_weights_str = ''
+        try:
+            # Only show weights > 1%
+            significant_weights = [(i, w) for i, w in enumerate(target_weights) if w > 0.01]
+            
+            # Create the weights string
+            weight_items = []
+            for i, w in significant_weights:
+                # Safely get strategy name if available
+                if i < len(strategies):
+                    strategy_name = strategies[i]
+                else:
+                    strategy_name = f"Asset {i}"
+                weight_items.append(f"{strategy_name}: {w*100:.1f}%")
+            
+            target_weights_str = '<br>'.join(weight_items)
+        except Exception as e:
+            print(f"Error creating target weights string: {e}")
+            target_weights_str = 'Error displaying weights'
         
         # Calculate net return (after 5% fee) for display
         target_net_return_pct = target_return_pct - 5.0
