@@ -234,8 +234,8 @@ max_weight = 0.5  # 50%
 st.sidebar.markdown("## Display Settings")
 period = st.sidebar.radio("Select RoA Period", ["ITD RoA", "T12M RoA", "T6M RoA"], index=0)
 
-# Map the period selection to the actual column name in the RoA Master Sheet
-roa_column = period  # The column names in RoA Master Sheet match the radio button options
+# Map the period selection to the actual column name in the generated data
+roa_column = period  # The column names in the generated data match the radio button options
 
 # --- Allow switching between Main Strategies and Substrategies ---
 st.sidebar.markdown("### View Level")
@@ -277,7 +277,7 @@ teal = "#20b2aa"
 # --- Data Loading and Processing Functions ---
 @st.cache_data(ttl=600)  # Cache for 10 minutes
 def generate_annual_returns_from_monthly(force_reload=False, period="ITD RoA"):
-    """Generate annual returns from monthly data to replace RoA Master Sheet"""
+    """Generate annual returns from monthly data"""
     if force_reload:
         # Clear the cache for this function
         generate_annual_returns_from_monthly.clear()
@@ -3795,7 +3795,23 @@ elif view_level == "Sub Strategies":
         with col1:
             if st.button("Load Aggregate Monthly RoA.xlsx", key="load_monthly_roa_substrategy"):
                 try:
-                    file_path = r"I:\BW Code\CashDragProject\portfolio_optimizer_streamlit\Aggregate Monthly RoA.xlsx"
+                    # Try multiple possible file paths for Aggregate Monthly RoA.xlsx
+                    possible_paths = [
+                        "Aggregate Monthly RoA.xlsx",
+                        os.path.join(os.getcwd(), "Aggregate Monthly RoA.xlsx"),
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)), "Aggregate Monthly RoA.xlsx"),
+                        "./portfolio_optimizer_streamlit/Aggregate Monthly RoA.xlsx",
+                        "./Aggregate Monthly RoA.xlsx"
+                    ]
+                    
+                    file_path = None
+                    for path in possible_paths:
+                        if os.path.exists(path):
+                            file_path = path
+                            break
+                    
+                    if file_path is None:
+                        raise FileNotFoundError("Could not find Aggregate Monthly RoA.xlsx in any of the expected locations")
                     monthly_roa_data = pd.read_excel(file_path)
                     
                     # Process the data (convert to numeric, handle dates)
@@ -3985,11 +4001,11 @@ elif view_level == "Sub Strategies":
         
         # Prepare data for styling and the Optimal Allocation Weights table
         st.markdown("### Optimal Allocation Weights")
-        st.markdown("*Showing Current, Max Sharpe Ratio, and 15% Net Target Return allocations*")
+        st.markdown("*Showing Current, Max Sharpe Ratio, and Maximum Return allocations*")
         st.markdown("""<div style='font-size:0.85em;color:#666;margin-top:-10px;margin-bottom:10px;'>
         • <b>Current Weight</b>: Current portfolio allocation<br>
         • <b>Max Sharpe Weight</b>: Allocation that maximizes the Sharpe ratio<br>
-        • <b>Target Return Weight</b>: Allocation that targets 15% net return
+        • <b>Maximum Return Weight</b>: Allocation that maximizes portfolio return
         </div>""", unsafe_allow_html=True)
 
         if 'substrategies' in locals() and isinstance(substrategies, list) and len(substrategies) > 0 and \
@@ -4010,15 +4026,39 @@ elif view_level == "Sub Strategies":
                 df_sub_map = df_sub[['Substrategy', 'Strategy']].drop_duplicates(subset=['Substrategy'])
                 strategy_map = pd.Series(df_sub_map.Strategy.values, index=df_sub_map.Substrategy).to_dict()
 
+            # Get RoA values from monthly data based on selected lookback period
+            roa_values = [0.0] * len(substrategies_s)  # Default to 0.0
+            contribution_values = [0.0] * len(substrategies_s)  # Default to 0.0
+            
+            # Check if we have monthly RoA data in session state
+            if 'monthly_roa_data' in st.session_state and not st.session_state.monthly_roa_data.empty:
+                monthly_data = st.session_state.monthly_roa_data
+                
+                # For each substrategy, try to find matching RoA in the monthly data
+                for i, substrat in enumerate(substrategies_s):
+                    # Try direct match first
+                    if substrat in monthly_data.columns:
+                        roa_values[i] = monthly_data[substrat].mean() * 12  # Annualize monthly return
+                        contribution_values[i] = roa_values[i] * current_weights_s[i]  # Calculate contribution
+                    else:
+                        # Try to find a match using the name mapping
+                        for alt_name, std_name in name_mapping.items():
+                            if std_name == substrat and alt_name in monthly_data.columns:
+                                roa_values[i] = monthly_data[alt_name].mean() * 12  # Annualize monthly return
+                                contribution_values[i] = roa_values[i] * current_weights_s[i]  # Calculate contribution
+                                break
+            
             weights_display_df = pd.DataFrame({
                 'Substrategy': substrategies_s,
                 'Strategy': [strategy_map.get(s, 'Unknown') for s in substrategies_s],
-                'Current Weight': [w * 100 for w in current_weights_s],
+                'Weight': [w * 100 for w in current_weights_s],
+                'RoA': [r * 100 for r in roa_values],  # Convert to percentage
+                'Contribution': [c * 100 for c in contribution_values],  # Convert to percentage
                 'Max Sharpe Weight': [w * 100 for w in max_sharpe_weights_s],
                 'Target Return Weight': [w * 100 for w in target_weights_s]
             })
 
-            weight_columns = ['Current Weight', 'Max Sharpe Weight', 'Target Return Weight']
+            weight_columns = ['Weight', 'RoA', 'Contribution', 'Max Sharpe Weight', 'Target Return Weight']
             # Columns to actually show in the table (Strategy column will be used for coloring but might be hidden if not in this list)
             # For now, let's include 'Strategy' in the display.
             table_display_columns = ['Substrategy', 'Strategy'] + weight_columns
@@ -4050,7 +4090,7 @@ elif view_level == "Sub Strategies":
             else:
                 st.dataframe(pd.DataFrame(columns=table_display_columns)) # Empty table with headers
         else:
-            st.dataframe(pd.DataFrame(columns=['Substrategy', 'Strategy', 'Current Weight', 'Max Sharpe Weight', 'Target Return Weight']))
+            st.dataframe(pd.DataFrame(columns=['Substrategy', 'Strategy', 'Weight', 'RoA', 'Contribution', 'Max Sharpe Weight', 'Target Return Weight']))
 
         # --- START: New code for Bar Chart and Sum Check ---
 
@@ -4073,7 +4113,7 @@ elif view_level == "Sub Strategies":
 
             plot_data = {
                 'Substrategy': sorted_substrategies,
-                'Current Weight (%)': [w * 100 for w in sorted_current_weights],
+                'Weight (%)': [w * 100 for w in sorted_current_weights],
                 'Max Sharpe Weight (%)': [w * 100 for w in sorted_max_sharpe_weights],
                 'Target Return Weight (%)': [w * 100 for w in sorted_target_return_weights]
             }
