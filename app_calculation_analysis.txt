@@ -1,0 +1,31 @@
+App Portfolio Return Calculation Extraction
+=========================================
+
+Using the following weights:
+AIRCRAFT F1: 0.1402 (14.0%)
+CMBS F1: 0.7338 (73.4%)
+SHORT TERM F1: 0.0824 (8.2%)
+CLO F1: 0.0436 (4.4%)
+ABS F1: 0.0000 (0.0%)
+
+=== ARITHMETIC MEAN CALCULATION (APP METHOD) ===
+Strategy | Monthly Mean | Annualized | Weight | Contribution
+---------------------------------------------------------------------------
+AIRCRAFT F1 | 0.021460 | 0.257523 (25.75%) | 0.1402 (14.0%) | 0.036103 (3.61%)
+CMBS F1 | 0.014682 | 0.176185 (17.62%) | 0.7338 (73.4%) | 0.129289 (12.93%)
+SHORT TERM F1 | 0.003500 | 0.042000 (4.20%) | 0.0824 (8.2%) | 0.003460 (0.35%)
+CLO F1 | 0.004024 | 0.048289 (4.83%) | 0.0436 (4.4%) | 0.002105 (0.21%)
+ABS F1 | 0.008958 | 0.107502 (10.75%) | 0.0000 (0.0%) | 0.000000 (0.00%)
+---------------------------------------------------------------------------
+Total portfolio return: 0.170957 (17.10%)
+Net return (after 5% fee): 0.120957 (12.10%)
+
+=== GEOMETRIC MEAN CALCULATION ===
+Monthly geometric mean: 0.014193
+Annual geometric return: 0.184261 (18.43%)
+Net geometric return (after 5% fee): 0.134261 (13.43%)
+
+=== ALTERNATIVE GEOMETRIC MEAN CALCULATION ===
+Alternative monthly geometric mean: 0.014193
+Alternative annual geometric return: 0.184261 (18.43%)
+Alternative net geometric return (after 5% fee): 0.134261 (13.43%)

@@ -194,7 +194,24 @@ def calculate_portfolio_metrics(returns, weights):
     # (previously enforced 2% minimum)
     
     # Print the contribution of each strategy to the portfolio return and volatility
-    print("\nStrategy contributions to portfolio:")
+    print("\nDETAILED DEBUG - Strategy contributions to portfolio:")
+    print("Strategy | Monthly Mean | Annualized Return | Weight | Contribution")
+    print("-" * 75)
+    total_contribution = 0
+    for i, strategy in enumerate(returns.columns):
+        monthly_mean = returns_filled[strategy].mean()
+        annualized = monthly_mean * 12
+        weight = weights[i]
+        contribution = annualized * weight
+        total_contribution += contribution
+        vol = returns_filled[strategy].std() * np.sqrt(12)
+        print(f"{strategy} | {monthly_mean:.6f} | {annualized:.6f} ({annualized*100:.2f}%) | {weight:.6f} ({weight*100:.1f}%) | {contribution:.6f} ({contribution*100:.2f}%)")
+        
+    print("-" * 75)
+    print(f"Total portfolio return (sum of contributions): {total_contribution:.6f} ({total_contribution*100:.2f}%)")
+    
+    # Original debug output
+    print("\nOriginal debug format:")
     max_random_portfolios = min(len(returns.columns), 10)  # Limit to at most 10 random portfolios
     step_size = max(1, len(returns.columns) // max_random_portfolios)
     for i in range(0, len(returns.columns), step_size):
@@ -1775,7 +1792,115 @@ def generate_efficient_frontier(returns, risk_free_rate=0.02, num_portfolios=15,
         target_vol
     )
 
-@st.cache_data(ttl=3600, max_entries=10)
+def minimize_volatility(returns, target_return=None):
+    """
+    Find the portfolio with minimum volatility, optionally subject to a target return constraint.
+    
+    Parameters:
+    -----------
+    returns : pd.DataFrame
+        DataFrame with returns for each asset
+    target_return : float, optional
+        Target return constraint (default: None)
+        
+    Returns:
+    --------
+    np.array
+        Optimal portfolio weights
+    """
+    n_assets = len(returns.columns)
+    
+    # Function to minimize portfolio volatility
+    def portfolio_volatility(weights):
+        return np.sqrt(np.dot(weights.T, np.dot(returns.cov() * 12, weights)))
+    
+    # Initial guess: equal weights
+    initial_weights = np.ones(n_assets) / n_assets
+    
+    # Constraints
+    constraints = [
+        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}  # Weights sum to 1
+    ]
+    
+    # Add target return constraint if specified
+    if target_return is not None:
+        def target_return_constraint(weights):
+            return np.sum(returns.mean() * weights) * 12 - target_return
+        
+        constraints.append({'type': 'eq', 'fun': target_return_constraint})
+    
+    # Bounds for weights (0 to 1)
+    bounds = tuple((0, 1) for _ in range(n_assets))
+    
+    # Minimize volatility
+    result = minimize(
+        portfolio_volatility,
+        initial_weights,
+        method='SLSQP',
+        bounds=bounds,
+        constraints=constraints,
+        options={'ftol': 1e-9, 'maxiter': 1000}
+    )
+    
+    if not result['success']:
+        raise Exception(f"Optimization failed: {result['message']}")
+    
+    return result['x']
+
+def maximize_return_for_volatility(returns, target_volatility):
+    """
+    Find the portfolio with maximum return, subject to a target volatility constraint.
+    
+    Parameters:
+    -----------
+    returns : pd.DataFrame
+        DataFrame with returns for each asset
+    target_volatility : float
+        Target volatility constraint
+        
+    Returns:
+    --------
+    np.array
+        Optimal portfolio weights
+    """
+    n_assets = len(returns.columns)
+    
+    # Function to minimize negative return (maximize return)
+    def negative_return(weights):
+        return -np.sum(returns.mean() * weights) * 12
+    
+    # Function to calculate portfolio volatility
+    def portfolio_volatility(weights):
+        return np.sqrt(np.dot(weights.T, np.dot(returns.cov() * 12, weights)))
+    
+    # Initial guess: equal weights
+    initial_weights = np.ones(n_assets) / n_assets
+    
+    # Constraints
+    constraints = [
+        {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # Weights sum to 1
+        {'type': 'eq', 'fun': lambda x: portfolio_volatility(x) - target_volatility}  # Target volatility
+    ]
+    
+    # Bounds for weights (0 to 1)
+    bounds = tuple((0, 1) for _ in range(n_assets))
+    
+    # Maximize return (minimize negative return)
+    result = minimize(
+        negative_return,
+        initial_weights,
+        method='SLSQP',
+        bounds=bounds,
+        constraints=constraints,
+        options={'ftol': 1e-9, 'maxiter': 1000}
+    )
+    
+    if not result['success']:
+        raise Exception(f"Optimization failed: {result['message']}")
+    
+    return result['x']
+
+@st.cache_data(ttl=3600, max_entries=20)
 def create_efficient_frontier_plot(
     returns,
     current_weights=None,
@@ -1950,19 +2075,35 @@ def create_efficient_frontier_plot(
             # Generate intermediate points for a smooth frontier
             min_return = min(efficient_returns)
             max_return = max(efficient_returns)
+            
+            # Use 20 points for a good balance of smoothness and performance
             target_returns = np.linspace(min_return, max_return, 20)
             
+            # Track successful points
+            successful_points = 0
+            
             for target_ret in target_returns:
-                if target_ret not in efficient_returns:  # Skip if we already have this return
+                # Use a small tolerance to avoid duplicates
+                if all(abs(r - target_ret) > 0.0001 for r in efficient_returns):  # Skip if we already have this return
                     try:
                         # Use minimize_volatility with target_ret constraint
                         weights = minimize_volatility(returns, target_ret)
                         ret, vol = calculate_portfolio_metrics(returns, weights)
                         efficient_returns.append(ret)
                         efficient_vols.append(vol)
+                        successful_points += 1
                     except Exception as e:
-                        print(f"Error generating frontier point for return {target_ret}: {e}")
+                        # Just continue if this point fails
                         continue
+            
+            # Ensure the max sharpe and max return points are included
+            if max_sharpe_return not in efficient_returns:
+                efficient_returns.append(max_sharpe_return)
+                efficient_vols.append(max_sharpe_vol)
+                
+            if max_return_return not in efficient_returns:
+                efficient_returns.append(max_return_return)
+                efficient_vols.append(max_return_vol)
             
             # Sort points by volatility for proper curve drawing
             points = sorted(zip(efficient_vols, efficient_returns))
@@ -2229,6 +2370,25 @@ def create_efficient_frontier_plot(
     ))
     
     # Add efficient frontier
+    # Make sure the Maximum Return Portfolio is included in the efficient frontier
+    if max_return_vol is not None and max_return_return is not None:
+        # Check if the Maximum Return Portfolio is already in the efficient frontier points
+        max_return_in_frontier = False
+        for i in range(len(efficient_vols_pct)):
+            if abs(efficient_vols_pct[i] - max_return_vol * 100) < 0.01 and abs(efficient_returns_pct[i] - max_return_return * 100) < 0.01:
+                max_return_in_frontier = True
+                break
+        
+        # If not, add it to ensure it's part of the frontier line
+        if not max_return_in_frontier:
+            efficient_vols_pct.append(max_return_vol * 100)
+            efficient_returns_pct.append(max_return_return * 100)
+            
+            # Sort points by volatility for proper curve drawing
+            points = sorted(zip(efficient_vols_pct, efficient_returns_pct))
+            efficient_vols_pct = [p[0] for p in points]
+            efficient_returns_pct = [p[1] for p in points]
+    
     fig.add_trace(go.Scatter(
         x=efficient_vols_pct,
         y=efficient_returns_pct,

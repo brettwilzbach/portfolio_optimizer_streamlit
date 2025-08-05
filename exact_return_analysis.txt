@@ -1,0 +1,34 @@
+Extracting Exact Calculation for 11.97% Return
+=============================================
+
+Portfolio weights:
+AIRCRAFT F1: 0.1402 (14.0%)
+CMBS F1: 0.7338 (73.4%)
+SHORT TERM F1: 0.0824 (8.2%)
+CLO F1: 0.0436 (4.4%)
+ABS F1: 0.0000 (0.0%)
+
+Results by time period:
+
+--- ITD PERIOD ---
+Using 20 months of data
+Arithmetic mean net return: 12.10%
+Geometric mean net return: 13.43%
+
+--- T12M PERIOD ---
+Using data from 2024-06-01 00:00:00 to 2025-06-01 00:00:00
+Using 13 months of data
+Arithmetic mean net return: 6.97%
+Geometric mean net return: 7.63%
+
+--- T6M PERIOD ---
+Using data from 2024-12-01 00:00:00 to 2025-06-01 00:00:00
+Using 7 months of data
+Arithmetic mean net return: 9.38%
+Geometric mean net return: 10.35%
+
+--- T24M PERIOD ---
+Using data from 2023-06-01 00:00:00 to 2025-06-01 00:00:00
+Using 20 months of data
+Arithmetic mean net return: 12.10%
+Geometric mean net return: 13.43%

@@ -4,15 +4,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import plotly.graph_objects as go
+import plotly.express as px
 import base64
 from scipy.optimize import minimize
 import os
+from datetime import datetime
 from efficient_frontier import (
-    generate_synthetic_returns,
     calculate_portfolio_metrics,
     calculate_sharpe_ratio,
     generate_efficient_frontier,
     create_efficient_frontier_plot
+)
+from monthly_data_processor import (
+    calculate_annual_returns_from_monthly,
+    prepare_monthly_data_for_calculations,
+    load_monthly_roa_data,
+    map_monthly_columns_to_strategies,
+    generate_annual_returns_from_monthly
 )
 from efficient_frontier_tiered import generate_efficient_frontier_with_tiered_allocation
 
@@ -162,6 +170,21 @@ st.sidebar.markdown("### Optimization Constraints")
 target_return = None
 use_target_return = False
 
+# Add proximity constraint to limit deviation from current weights
+st.sidebar.markdown("### Proximity Constraint")
+use_proximity_constraint = st.sidebar.checkbox("Limit Deviation from Current Weights", value=True)
+
+# Only show max deviation slider if checkbox is selected
+if use_proximity_constraint:
+    max_deviation = st.sidebar.slider("Maximum Deviation from Current Weights (%)", 
+                                    min_value=5, 
+                                    max_value=40, 
+                                    value=20, 
+                                    step=5) / 100.0
+    st.sidebar.info("This constraint limits how much each asset allocation can deviate from the current portfolio, creating a more realistic transition path.")
+else:
+    max_deviation = 1.0  # No effective constraint if not applied
+
 # Add Aircraft maximum allocation constraint
 st.sidebar.markdown("### Capacity Constraints")
 use_aircraft_constraint = st.sidebar.checkbox("Apply Aircraft Capacity Constraint", value=True)
@@ -252,39 +275,37 @@ teal = "#20b2aa"
 # ---- Helper Functions ----
 
 # --- Data Loading and Processing Functions ---
-@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
-def load_roa_master(force_reload=False):
-    """Load the RoA Master Sheet with error handling"""
-    # Clear the cache if force_reload is True
+@st.cache_data(ttl=600)  # Cache for 10 minutes
+def generate_annual_returns_from_monthly(force_reload=False, period="ITD RoA"):
+    """Generate annual returns from monthly data to replace RoA Master Sheet"""
     if force_reload:
-        load_roa_master.clear()
-        print("Cleared RoA Master Sheet cache to force reload")
+        # Clear the cache for this function
+        generate_annual_returns_from_monthly.clear()
+        print("Cleared monthly data cache to force reload")
     
     try:
-        # Try multiple possible file paths - including both local and deployed environments
-        possible_paths = [
-            "RoA Master Sheet.xlsx",
-            os.path.join(os.getcwd(), "RoA Master Sheet.xlsx"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "RoA Master Sheet.xlsx"),
-            "./portfolio_optimizer_streamlit/RoA Master Sheet.xlsx",
-            "./RoA Master Sheet.xlsx"
-        ]
+        # Load monthly data
+        monthly_data = load_monthly_roa_data()
         
-        file_path = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                file_path = path
-                print(f"Found RoA Master Sheet at: {file_path}")
-                break
-                
-        if file_path is None:
-            raise FileNotFoundError(f"RoA Master Sheet not found in any of the expected locations: {possible_paths}")
-            
-        roa_master = pd.read_excel(file_path)
-        roa_master.columns = [col.strip() for col in roa_master.columns]
+        if monthly_data is None:
+            raise FileNotFoundError("Monthly RoA data not found")
+        
+        # Calculate annual returns from monthly data
+        annual_returns_df = calculate_annual_returns_from_monthly(monthly_data, period)
+        
+        # Create a DataFrame that mimics the structure of the old RoA Master Sheet
+        # with Strategy, Substrategy, and period columns
+        roa_master = pd.DataFrame()
+        roa_master['Strategy'] = annual_returns_df['Strategy']
+        roa_master['Substrategy'] = None  # No substrategy in the main strategies view
+        roa_master[period] = annual_returns_df['RoA']
+        
+        print(f"Generated annual returns from monthly data for {period}")
+        print(roa_master.head())
+        
         return roa_master
     except Exception as e:
-        st.sidebar.error(f"❌ Error loading RoA Master Sheet: {e}")
+        st.sidebar.error(f"❌ Error generating annual returns from monthly data: {e}")
         st.stop()
         return None
 
@@ -400,7 +421,9 @@ def prepare_main_strategies_data(df, roa_master, main_strategies, roa_column):
     if weight_sum > 0:
         df_main['Weight'] = df_main['Weight'] / weight_sum
     
-    # Get RoA values from the RoA Master sheet
+    # Generate annual returns from monthly data instead of loading RoA Master Sheet
+    roa_master = generate_annual_returns_from_monthly(period=period)
+    
     if roa_master is not None and not roa_master.empty:
         # Filter to get the main strategy RoA values
         main_roa = roa_master[(roa_master['Strategy'].isin(main_strategies)) & 
@@ -443,7 +466,7 @@ def prepare_substrategy_data(df, roa_master, roa_column):
         if weight_sum > 0:
             df_sub['Weight'] = df_sub['Weight'] / weight_sum
         
-        # Get RoA values from the RoA Master sheet
+        # Get RoA values from the monthly data
         if roa_master is not None and not roa_master.empty and roa_column in roa_master.columns:
             # First try to merge on both Strategy and Substrategy (exact match)
             merged_df = pd.merge(
@@ -1453,19 +1476,19 @@ def load_monthly_roa_data():
         print(f"Error loading monthly RoA data: {e}")
         return None
 
-# ---- Load RoA Master Sheet ----
-# Add a button to reload the RoA Master Sheet
+# ---- Load Monthly Return Data ----
+# Add a button to reload the monthly data
 with st.sidebar:
-    reload_roa = st.button("Reload RoA Master Sheet", help="Click to reload the RoA Master Sheet with updated values")
+    reload_monthly_data = st.button("Reload Monthly Data", help="Click to reload the monthly return data with updated values")
     
-# Load the RoA Master Sheet (force reload if button is clicked)
-roa_master = load_roa_master(force_reload=reload_roa)
+# Generate annual returns from monthly data (force reload if button is clicked)
+roa_master = generate_annual_returns_from_monthly(force_reload=reload_monthly_data, period=period)
 
 # Display confirmation if reloaded
-if reload_roa:
-    st.sidebar.success("✅ RoA Master Sheet reloaded successfully!")
-    # Print the first few rows of the RoA Master Sheet for verification
-    print("\nReloaded RoA Master Sheet - First few rows:")
+if reload_monthly_data:
+    st.sidebar.success("✅ Monthly data reloaded successfully!")
+    # Print the first few rows of the generated annual returns for verification
+    print("\nReloaded monthly data - First few rows of annual returns:")
     print(roa_master.head())
 
 # ---- Upload Portfolio Holdings File ----
@@ -2121,7 +2144,7 @@ if apply_button and slider_total > 0:
     
     # Calculate new projected returns
     gross_return = df_main['Contribution'].sum() * 100
-    net_return = gross_return - 5.0  # 500bps fee
+    net_return = gross_return - 4.5  # 450bps fee
     
     # Display success messages
     st.sidebar.success(f"✅ Changes applied successfully!")
@@ -2174,12 +2197,12 @@ if view_level == "Main Strategies":
         for idx, row in df_main.iterrows():
             print(f"DEBUG - {row['Strategy']}: Weight={row['Weight']:.4f}, RoA={row['RoA']:.4f}, Contribution={row['Contribution']:.6f}, Contribution to Return={row['Contribution']*100:.4f}%")
         
-        # Ensure gross return is never below 5.0% to prevent negative net returns
-        gross_return = max(raw_gross_return, 5.0)
+        # Ensure gross return is never below 4.5% to prevent negative net returns
+        gross_return = max(raw_gross_return, 4.5)
         print(f"DEBUG - Final RoA-based gross return (after floor): {gross_return:.4f}%")
         
-        net_return = gross_return - 5.0  # Assuming 5.0% fee (500bps)
-        print(f"DEBUG - RoA-based net return calculation: {gross_return:.4f}% - 5.0% = {net_return:.4f}%")
+        net_return = gross_return - 4.5  # Assuming 4.5% fee (450bps)
+        print(f"DEBUG - RoA-based net return calculation: {gross_return:.4f}% - 4.5% = {net_return:.4f}%")
         
         # Get the current weights for comparison with efficient frontier calculation
         current_weights_list = df_main['Weight'].tolist()
@@ -2198,9 +2221,9 @@ if view_level == "Main Strategies":
         
         # Calculate scenario return
         scenario_gross_return = scenario_df['Contribution'].sum() * 100  # as percentage
-        # Ensure scenario gross return is never below 5.0% to prevent negative net returns
-        scenario_gross_return = max(scenario_gross_return, 5.0)
-        scenario_net_return = scenario_gross_return - 5.0  # Assuming 5.0% fee (500bps)
+        # Ensure scenario gross return is never below 4.5% to prevent negative net returns
+        scenario_gross_return = max(scenario_gross_return, 4.5)
+        scenario_net_return = scenario_gross_return - 4.5  # Assuming 4.5% fee (450bps)
         
         # Calculate impact for -1% cash scenario
         cash_impact = scenario_net_return - net_return
@@ -2230,7 +2253,7 @@ if view_level == "Main Strategies":
         
         # Calculate scenario return for Cash to 5%
         cash_to_5_gross_return = cash_to_5_scenario_df['Contribution'].sum() * 100  # as percentage
-        cash_to_5_net_return = cash_to_5_gross_return - 5.0  # Assuming 5.0% fee (500bps)
+        cash_to_5_net_return = cash_to_5_gross_return - 4.5  # Assuming 4.5% fee (450bps)
         
         # Calculate impact for Cash to 5% scenario
         cash_to_5_impact = cash_to_5_net_return - net_return
@@ -2672,13 +2695,30 @@ if view_level == "Main Strategies":
         print("\nDEBUG - Current Portfolio Metrics Calculation:")
         print(f"portfolio_return: {portfolio_return:.6f}")
         print(f"Gross Return: {portfolio_return*100:.2f}%")
-        print(f"Net Return (after 5% fee): {(portfolio_return-0.05)*100:.2f}%")
+        print(f"Net Return (after 4.5% fee): {(portfolio_return-0.045)*100:.2f}%")
         print(f"Data source: {'Monthly returns data' if monthly_returns is not None else 'Unknown'}")
+        
+        # DETAILED DEBUG: Print the exact calculations for each strategy
+        if monthly_returns is not None:
+            print("\nDETAILED DEBUG - Exact Calculations for 11.97% Return:")
+            print("Strategy | Monthly Mean | Annualized | Weight | Contribution")
+            print("-" * 75)
+            total_contribution = 0
+            for i, strategy in enumerate(monthly_returns.columns):
+                if i < len(current_weights):
+                    monthly_mean = monthly_returns[strategy].mean()
+                    annualized = monthly_mean * 12
+                    weight = current_weights[i]
+                    contribution = annualized * weight
+                    total_contribution += contribution
+                    print(f"{strategy} | {monthly_mean:.6f} | {annualized:.6f} ({annualized*100:.2f}%) | {weight:.6f} ({weight*100:.1f}%) | {contribution:.6f} ({contribution*100:.2f}%)")
+            print("-" * 75)
+            print(f"Total portfolio return (sum of contributions): {total_contribution:.6f} ({total_contribution*100:.2f}%)")
         
         metrics_cols = st.columns(3)
         with metrics_cols[0]:
-            # Calculate net return (after 5% fee)
-            portfolio_net_return = portfolio_return - 0.05
+            # Calculate net return (after 4.5% fee)
+            portfolio_net_return = portfolio_return - 0.045
             st.metric("Expected Annual Return", f"{portfolio_net_return*100:.2f}%")
             
             # Update the top-level net return box with this value
@@ -2839,8 +2879,8 @@ if view_level == "Main Strategies":
                 portfolio_vol = verify_current_vol
                 sharpe_ratio = verify_current_sharpe
                 
-                # Calculate net return (after 5% fee)
-                portfolio_net_return = portfolio_return - 0.05
+                # Calculate net return (after 4.5% fee)
+                portfolio_net_return = portfolio_return - 0.045
                 
                 # Handle NaN values for display
                 gross_return_display = f"{portfolio_return*100:.2f}%" if not np.isnan(portfolio_return) else "0.00%"
@@ -2858,8 +2898,8 @@ if view_level == "Main Strategies":
                 """, unsafe_allow_html=True)
             
             with cols[1]:
-                # Calculate net return (after 5% fee)
-                max_sharpe_net_return = max_sharpe_return - 0.05
+                # Calculate net return (after 4.5% fee)
+                max_sharpe_net_return = max_sharpe_return - 0.045
                 
                 # Print debug info to compare efficient frontier values with what's displayed
                 print(f"\nDEBUG - Max Sharpe Portfolio from efficient_frontier.py:")
@@ -2874,7 +2914,7 @@ if view_level == "Main Strategies":
                 max_sharpe_return = verify_return
                 max_sharpe_vol = verify_vol
                 max_sharpe_sharpe = verify_sharpe
-                max_sharpe_net_return = max_sharpe_return - 0.05
+                max_sharpe_net_return = max_sharpe_return - 0.045
                 
                 # Handle NaN values for display
                 max_sharpe_gross_display = f"{max_sharpe_return*100:.2f}%" if not np.isnan(max_sharpe_return) else "0.00%"
@@ -2911,8 +2951,8 @@ if view_level == "Main Strategies":
                     else:
                         target_sharpe = (target_return_value-(short_term_yield/100.0))/target_vol if target_vol > 0 else 0
                     
-                    # Calculate net return (after 5% fee)
-                    target_net_return = target_return_value - 0.05
+                    # Calculate net return (after 4.5% fee)
+                    target_net_return = target_return_value - 0.045
                     
                     # Handle NaN values for display
                     target_gross_display = f"{target_return_value*100:.2f}%" if not np.isnan(target_return_value) else "0.00%"

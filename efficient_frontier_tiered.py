@@ -7,13 +7,15 @@ from efficient_frontier import (
     maximize_return,
     maximize_sharpe_ratio
 )
+import math
 
 @st.cache_data(ttl=300)
 def generate_efficient_frontier_with_tiered_allocation(returns, risk_free_rate=0.02, num_portfolios=30, 
-                                                       aircraft_max_allocation=0.25, cash_min_allocation=0.05, cash_max_allocation=0.10, target_return=None):
+                                                       aircraft_max_allocation=0.25, cash_min_allocation=0.05, cash_max_allocation=0.10, 
+                                                       target_return=None, current_weights=None, max_deviation=0.20):
     """
     Generate the efficient frontier with upper bound constraints on Aircraft allocation
-    and cash (SHORT TERM) allocation.
+    and cash (SHORT TERM) allocation. Also includes a proximity constraint to limit deviation from current weights.
     
     Parameters:
     -----------
@@ -22,13 +24,19 @@ def generate_efficient_frontier_with_tiered_allocation(returns, risk_free_rate=0
     risk_free_rate : float, optional
         Annual risk-free rate (default: 0.02 or 2%)
     num_portfolios : int, optional
-        Number of portfolios to generate (default: 100)
+        Number of portfolios to generate (default: 30)
     aircraft_max_allocation : float, optional
         Maximum allocation to Aircraft (default: 0.25 or 25%)
+    cash_min_allocation : float, optional
+        Minimum allocation to Cash/Short Term (default: 0.05 or 5%)
     cash_max_allocation : float, optional
         Maximum allocation to Cash/Short Term (default: 0.10 or 10%)
     target_return : float, optional
         Target return for constrained optimization (default: None)
+    current_weights : array-like, optional
+        Current portfolio weights (default: None)
+    max_deviation : float, optional
+        Maximum allowed deviation from current weights (default: 0.20 or 20%)
     
     Returns:
     --------
@@ -79,6 +87,43 @@ def generate_efficient_frontier_with_tiered_allocation(returns, risk_free_rate=0
     constraints = [
         {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}  # weights sum to 1
     ]
+    
+    # Add proximity constraint if current weights are provided
+    if current_weights is not None and max_deviation is not None and max_deviation < 1.0:
+        print(f"Adding proximity constraint: max deviation from current weights = {max_deviation*100:.1f}%")
+        
+        # Ensure current_weights is a numpy array with the right shape
+        if len(current_weights) != num_assets:
+            print(f"Warning: current_weights length ({len(current_weights)}) doesn't match number of assets ({num_assets})")
+            # Try to adjust the weights to match
+            if len(current_weights) > num_assets:
+                current_weights = current_weights[:num_assets]
+            else:
+                # Pad with zeros
+                current_weights = np.pad(current_weights, (0, num_assets - len(current_weights)), 'constant')
+        
+        # Normalize current weights to sum to 1
+        if np.sum(current_weights) > 0:
+            current_weights = current_weights / np.sum(current_weights)
+        
+        # Add constraint for each asset to limit deviation
+        for i in range(num_assets):
+            # Only add meaningful constraints (for assets with non-zero weights or potential)
+            if current_weights[i] > 0.01 or mean_returns[i] > 0.05:  # 1% weight or 5% return
+                # Lower bound: current weight - max_deviation (but not below 0)
+                lower_bound = max(0, current_weights[i] - max_deviation)
+                # Upper bound: current weight + max_deviation (but not above 1)
+                upper_bound = min(1, current_weights[i] + max_deviation)
+                
+                # Update the bounds for this asset
+                # Don't override existing tighter bounds
+                if bounds[i][0] < lower_bound:
+                    bounds[i] = (lower_bound, bounds[i][1])
+                if bounds[i][1] > upper_bound:
+                    bounds[i] = (bounds[i][0], upper_bound)
+                
+                print(f"Asset {i} ({returns.columns[i]}): Current weight = {current_weights[i]*100:.2f}%, "
+                      f"Allowed range = [{bounds[i][0]*100:.2f}%, {bounds[i][1]*100:.2f}%]")
     
     # Add minimum constraint for Cash (SHORT TERM) from UI parameter
     if cash_idx is not None:
