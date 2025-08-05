@@ -4125,7 +4125,7 @@ elif view_level == "Sub Strategies":
                 fig_alloc_chart = go.Figure()
                 fig_alloc_chart.add_trace(go.Bar(
                     y=plot_df['Substrategy'],
-                    x=plot_df['Current Weight (%)'],
+                    x=plot_df['Weight (%)'],
                     name='Current Weight',
                     orientation='h',
                     marker_color='rgb(26, 118, 255)' # Blue
