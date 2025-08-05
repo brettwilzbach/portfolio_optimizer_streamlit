@@ -380,8 +380,8 @@ def load_latest_portfolio_holdings():
                 data = pd.read_excel(backup_path)
                 return data, latest_info["datetime"]
         except Exception as e:
-            st.error(f"Error loading backup holdings data: {e}")
-    
+            print(f"Error loading backup holdings data: {e}")
+            return None, None
     return None, None
 
 @st.cache_data(ttl=600)  # Cache for 10 minutes
@@ -1496,7 +1496,10 @@ uploaded_file = st.sidebar.file_uploader("Upload Portfolio Holdings", type=["xls
 
 # Add a button to load the last backup of portfolio holdings
 last_holdings_data, last_holdings_datetime = load_latest_portfolio_holdings()
+
+# Always show the Load Last Backup button
 if last_holdings_data is not None and last_holdings_datetime is not None:
+    # Show button with timestamp when backup exists
     if st.sidebar.button(f"Load Last Backup ({last_holdings_datetime})", key="load_holdings_backup"):
         uploaded_file = None
         holdings_df = last_holdings_data.copy()
@@ -1536,6 +1539,9 @@ if last_holdings_data is not None and last_holdings_datetime is not None:
         
         # Force a rerun to update all values
         st.rerun()
+else:
+    # Show disabled button when no backup exists
+    st.sidebar.button("Load Last Backup (None Available)", disabled=True, key="no_backup_available")
 
 # Add a separator in the sidebar
 st.sidebar.markdown("---")
@@ -1650,8 +1656,42 @@ if uploaded_file:
         st.sidebar.error(f"❌ Error processing holdings file: {e}")
         st.stop()
 else:
-    # Check if we have a backup file to load
-    if 'holdings_df' in locals() and isinstance(holdings_df, pd.DataFrame) and not holdings_df.empty:
+    # Always try to load the latest backup first
+    last_holdings_data, last_holdings_datetime = load_latest_portfolio_holdings()
+    
+    if last_holdings_data is not None:
+        # Use the latest backup data
+        df = last_holdings_data
+        st.sidebar.info(f"Automatically loaded last portfolio from {last_holdings_datetime}")
+        
+        # Calculate weights for main strategies based on loaded backup data
+        main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
+        strategy_weights = {}
+        
+        # Aggregate the backup data by Strategy
+        if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
+            strategy_agg = df.groupby('Strategy').agg({
+                'Admin Net MV': 'sum'
+            }).reset_index()
+            
+            # Filter to only include the main strategies
+            strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
+            
+            # Calculate weights
+            total_mv = strategy_agg['Admin Net MV'].sum()
+            if total_mv > 0:
+                for _, row in strategy_agg.iterrows():
+                    strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
+            
+            # Fill in any missing strategies with zero weight
+            for strategy in main_strategies:
+                if strategy not in strategy_weights:
+                    strategy_weights[strategy] = 0.0
+        else:
+            # If required columns don't exist in backup, use default weights
+            strategy_weights = default_weights.copy()
+    # Check if we have a backup file loaded via button
+    elif 'holdings_df' in locals() and isinstance(holdings_df, pd.DataFrame) and not holdings_df.empty:
         # Use the backup data that was loaded via the button
         df = holdings_df
         
@@ -1682,52 +1722,17 @@ else:
             # If required columns don't exist in backup, use default weights
             strategy_weights = default_weights.copy()
     else:
-        # Try to load the latest backup automatically if available
-        last_holdings_data, last_holdings_datetime = load_latest_portfolio_holdings()
+        # Use default weights when no file is uploaded and no backup is available
+        strategy_weights = default_weights.copy()
         
-        if last_holdings_data is not None:
-            # Use the latest backup data
-            df = last_holdings_data
-            st.sidebar.info(f"Automatically loaded last backup from {last_holdings_datetime}")
-            
-            # Calculate weights for main strategies based on loaded backup data
-            main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
-            strategy_weights = {}
-            
-            # Aggregate the backup data by Strategy
-            if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
-                strategy_agg = df.groupby('Strategy').agg({
-                    'Admin Net MV': 'sum'
-                }).reset_index()
-                
-                # Filter to only include the main strategies
-                strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
-                
-                # Calculate weights
-                total_mv = strategy_agg['Admin Net MV'].sum()
-                if total_mv > 0:
-                    for _, row in strategy_agg.iterrows():
-                        strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
-                
-                # Fill in any missing strategies with zero weight
-                for strategy in main_strategies:
-                    if strategy not in strategy_weights:
-                        strategy_weights[strategy] = 0.0
-            else:
-                # If required columns don't exist in backup, use default weights
-                strategy_weights = default_weights.copy()
-        else:
-            # Use default weights when no file is uploaded and no backup is available
-            strategy_weights = default_weights.copy()
-            
-            # Create a dummy dataframe for display
-            df = pd.DataFrame({
-                'Strategy': list(default_weights.keys()),
-                'Substrategy': [''] * len(default_weights),
-                'Weight': list(default_weights.values()),
-                'RoA': [0.0] * len(default_weights),
-                'Contribution': [0.0] * len(default_weights)
-            })
+        # Create a dummy dataframe for display
+        df = pd.DataFrame({
+            'Strategy': list(default_weights.keys()),
+            'Substrategy': [''] * len(default_weights),
+            'Weight': list(default_weights.values()),
+            'RoA': [0.0] * len(default_weights),
+            'Contribution': [0.0] * len(default_weights)
+        })
     
     # If we have RoA Master data, add RoA values
     if roa_master is not None and not roa_master.empty:
