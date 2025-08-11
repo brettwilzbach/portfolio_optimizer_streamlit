@@ -1940,81 +1940,76 @@ try:
                         'Weight': [1.0/len(df_sub_raw['Substrategy'].unique())] * len(df_sub_raw['Substrategy'].unique())
                     })
         
-        # If we have RoA values from the RoA Master sheet
-        if roa_master is not None and not roa_master.empty:
-            # Check if the selected RoA column exists
-            if period in roa_master.columns:
-                try:
-                    # First try exact match on both Strategy and Substrategy
-                    sub_roa = roa_master.copy()
-                    
-                    # Clean up the data to ensure proper matching
-                    sub_roa['Strategy'] = sub_roa['Strategy'].str.strip() if 'Strategy' in sub_roa.columns else sub_roa['Strategy']
-                    sub_roa['Substrategy'] = sub_roa['Substrategy'].str.strip() if 'Substrategy' in sub_roa.columns else sub_roa['Substrategy']
-                    df_sub['Strategy'] = df_sub['Strategy'].str.strip() if 'Strategy' in df_sub.columns else df_sub['Strategy']
-                    df_sub['Substrategy'] = df_sub['Substrategy'].str.strip() if 'Substrategy' in df_sub.columns else df_sub['Substrategy']
-                    
-                    # Filter to valid substrategies
-                    sub_roa = sub_roa[~sub_roa['Substrategy'].isna() & (sub_roa['Substrategy'] != '')]
-                    
-                    # Process substrategies without debug information
-                    
-                    # Merge with the substrategy DataFrame
-                    if not sub_roa.empty:
-                        # First try to merge on both Strategy and Substrategy (exact match)
-                        merged_df = pd.merge(
-                            df_sub,
-                            sub_roa[['Strategy', 'Substrategy', period]],
-                            on=['Strategy', 'Substrategy'],
-                            how='left'
-                        )
-                        
-                        # For rows where RoA is missing, try a more flexible match on Substrategy only
-                        if period in merged_df.columns:  # Ensure period column exists
-                            missing_roa_idx = merged_df[period].isna()
-                            if missing_roa_idx.any():
-                                # Try to match on Substrategy only for each missing value
-                                for substrat in merged_df.loc[missing_roa_idx, 'Substrategy'].unique():
-                                    if pd.notna(substrat) and substrat != '':
-                                        # Find matching substrategies in the RoA Master
-                                        substrat_match = sub_roa[sub_roa['Substrategy'] == substrat]
-                                        if not substrat_match.empty and period in substrat_match.columns:
-                                            # Use the first matching RoA value
-                                            merged_df.loc[merged_df['Substrategy'] == substrat, period] = substrat_match.iloc[0][period]
-                                
-                                # If still missing, try a more flexible match with contains
-                                missing_roa_idx = merged_df[period].isna()
-                                if missing_roa_idx.any():
-                                    for substrat in merged_df.loc[missing_roa_idx, 'Substrategy'].unique():
-                                        if pd.notna(substrat) and substrat != '':
-                                            # Try to find any substrategy that contains this one
-                                            for roa_substrat in sub_roa['Substrategy'].unique():
-                                                if substrat in roa_substrat or roa_substrat in substrat:
-                                                    substrat_match = sub_roa[sub_roa['Substrategy'] == roa_substrat]
-                                                    if not substrat_match.empty and period in substrat_match.columns:
-                                                        # Use the first matching RoA value
-                                                        merged_df.loc[merged_df['Substrategy'] == substrat, period] = substrat_match.iloc[0][period]
-                        
-                        # Rename the RoA column
-                        if period in merged_df.columns:  # Ensure period column exists before renaming
-                            df_sub = merged_df.rename(columns={period: 'RoA'})
-                        else:
-                            # If period column doesn't exist, create RoA column with zeros
-                            df_sub = merged_df.copy()
-                            df_sub['RoA'] = 0.0
-                            # Removed warning message about RoA period not found
-                except Exception as e:
-                    st.sidebar.error(f"Error processing substrategies with {period}: {e}")
-                    # Create RoA column with zeros
-                    df_sub['RoA'] = 0.0
+        # Load RoA values from the Aggregate Monthly RoA spreadsheet
+        try:
+            # Load the Aggregate Monthly RoA spreadsheet
+            aggregate_monthly_path = "Aggregate Monthly RoA.xlsx"
+            if os.path.exists(aggregate_monthly_path):
+                aggregate_monthly_data = pd.read_excel(aggregate_monthly_path)
                 
-                # RoA values message removed
-            else:
-                # Removed warning message about RoA period not found
-                # Create RoA column with zeros
+                # Calculate annual returns from monthly data for each sub-strategy column
+                sub_roa_dict = {}
+                
+                # Get all columns except 'Month' and main strategy columns
+                main_strategies = ['ABS F1', 'AIRCRAFT F1', 'CMBS F1', 'CLO F1', 'SHORT TERM F1', 'AGGREGATE']
+                substrategy_columns = [col for col in aggregate_monthly_data.columns 
+                                     if col not in ['Month'] + main_strategies]
+                
+                # Calculate properly annualized returns for each sub-strategy
+                for col in substrategy_columns:
+                    if col in aggregate_monthly_data.columns:
+                        monthly_returns = aggregate_monthly_data[col].dropna()
+                        if len(monthly_returns) > 0:
+                            # Calculate cumulative return first
+                            cumulative_return = (1 + monthly_returns).prod() - 1
+                            
+                            # Annualize based on the actual time period
+                            num_months = len(monthly_returns)
+                            if num_months > 0:
+                                # Convert to annualized return: (1 + cumulative_return)^(12/num_months) - 1
+                                annualized_return = (1 + cumulative_return) ** (12 / num_months) - 1
+                                sub_roa_dict[col] = annualized_return
+                                print(f"Sub-strategy '{col}': {num_months} months, Cumulative: {cumulative_return*100:.2f}%, Annualized: {annualized_return*100:.2f}%")
+                
+                # Clean up substrategy names for matching
+                df_sub['Strategy'] = df_sub['Strategy'].str.strip() if 'Strategy' in df_sub.columns else df_sub['Strategy']
+                df_sub['Substrategy'] = df_sub['Substrategy'].str.strip() if 'Substrategy' in df_sub.columns else df_sub['Substrategy']
+                
+                # Initialize RoA column with zeros
                 df_sub['RoA'] = 0.0
-        else:
-            # Removed warning message about RoA Master Sheet
+                
+                # Match substrategies with the calculated annual returns
+                for idx, row in df_sub.iterrows():
+                    substrat = row['Substrategy']
+                    if pd.notna(substrat) and substrat != '':
+                        # First try exact match
+                        if substrat in sub_roa_dict:
+                            df_sub.loc[idx, 'RoA'] = sub_roa_dict[substrat]
+                        else:
+                            # Try partial matching - find best match
+                            best_match = None
+                            best_score = 0
+                            
+                            for roa_substrat in sub_roa_dict.keys():
+                                # Calculate similarity score
+                                if substrat.upper() in roa_substrat.upper() or roa_substrat.upper() in substrat.upper():
+                                    # Simple similarity based on common words
+                                    common_words = len(set(substrat.upper().split()) & set(roa_substrat.upper().split()))
+                                    if common_words > best_score:
+                                        best_score = common_words
+                                        best_match = roa_substrat
+                            
+                            if best_match and best_score > 0:
+                                df_sub.loc[idx, 'RoA'] = sub_roa_dict[best_match]
+                                print(f"Matched '{substrat}' to '{best_match}' with Annualized RoA: {sub_roa_dict[best_match]*100:.2f}%")
+                
+            else:
+                # If Aggregate Monthly RoA file doesn't exist, create RoA column with zeros
+                df_sub['RoA'] = 0.0
+                st.sidebar.warning("Aggregate Monthly RoA.xlsx not found. Using zero RoA values.")
+                
+        except Exception as e:
+            st.sidebar.error(f"Error processing Aggregate Monthly RoA data: {e}")
             # Create RoA column with zeros
             df_sub['RoA'] = 0.0
         
@@ -3183,7 +3178,7 @@ if view_level == "Main Strategies":
                 
                 styled_sharpe = max_sharpe_df.style.format({'Weight': '{:.2f}%'})
                 styled_sharpe = styled_sharpe.applymap(lambda x: color_weights(x), subset=['Weight'])
-                st.dataframe(styled_sharpe, height=200)
+                st.dataframe(styled_sharpe, height=200, use_container_width=True)
             
             # Add Maximum Return Portfolio weights
             with alloc_cols[1]:
@@ -3220,7 +3215,7 @@ if view_level == "Main Strategies":
                     # Style and display the dataframe
                     styled_return = max_return_df.style.format({'Weight': '{:.2f}%'})
                     styled_return = styled_return.applymap(lambda x: color_weights(x), subset=['Weight'])
-                    st.dataframe(styled_return, height=200)
+                    st.dataframe(styled_return, height=200, use_container_width=True)
                 except Exception as e:
                     st.error(f"Error creating max return DataFrame: {str(e)}")
                     # Create a fallback empty DataFrame
@@ -3238,70 +3233,7 @@ if view_level == "Main Strategies":
     else:
         st.warning("Insufficient data for efficient frontier analysis. Please ensure you have at least 3 strategies with RoA values.")
 
-    # Add correlation matrix at the bottom of main strategies section
-    if monthly_returns is not None and not monthly_returns.empty and len(monthly_returns.columns) > 1:
-        st.markdown("""
-        <div style='background-color:#f5f9fc; padding:10px; border-radius:8px; margin:15px 0 10px 0;'>
-            <span style='font-size:16px; font-weight:600; color:#1867a7;'>Strategy Correlation Matrix</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Calculate correlation matrix
-        corr_matrix = monthly_returns.corr()
-        
-        # Remove SHORT TERM from correlation matrix as it's riskless
-        short_term_columns = [col for col in corr_matrix.columns if 'SHORT TERM' in col]
-        if short_term_columns:
-            corr_matrix = corr_matrix.drop(short_term_columns, axis=0)
-            corr_matrix = corr_matrix.drop(short_term_columns, axis=1)
-        
-        # Map column names to strategy names for better display
-        corr_matrix.columns = [strategy_mapping.get(col, col) for col in corr_matrix.columns]
-        corr_matrix.index = [strategy_mapping.get(idx, idx) for idx in corr_matrix.index]
-        
-        # Create heatmap figure
-        fig = go.Figure()
-        
-        # Add heatmap trace with larger text
-        fig.add_trace(go.Heatmap(
-            z=corr_matrix.values,
-            x=corr_matrix.columns,
-            y=corr_matrix.index,
-            colorscale=[
-                [0.0, '#e0e0e0'],  # Light gray for lowest values
-                [0.3, '#a9a9a9'],  # Medium gray
-                [0.5, '#f5f5f5'],  # Very light gray/white for middle values
-                [0.7, '#4682b4'],  # Steel blue
-                [0.85, '#20b2aa'],  # Light sea green
-                [1.0, '#008080']   # Teal for highest values
-            ],
-            zmid=0.5,  # Center the color scale
-            text=np.round(corr_matrix.values, 2),  # Show rounded values
-            texttemplate='%{text:.2f}',  # Format as 2 decimal places
-            hoverinfo='text',
-            colorbar=dict(title='Correlation')
-        ))
-        
-        # Update layout with larger size
-        fig.update_layout(
-            height=650,  # Increased height
-            width=800,  # Increased width
-            title={
-                'text': 'Monthly Returns Correlation',
-                'y': 0.9,
-                'x': 0.5,
-                'xanchor': 'center',
-                'yanchor': 'top',
-                'font': dict(size=18)  # Larger title font
-            },
-            margin=dict(l=60, r=60, t=100, b=60),  # Increased margins
-            xaxis=dict(title='', tickangle=-45, tickfont=dict(size=14)),  # Larger tick fonts
-            yaxis=dict(title='', tickfont=dict(size=14)),  # Larger tick fonts
-            font=dict(size=14)  # Larger overall font
-        )
-        
-        # Display the heatmap
-        st.plotly_chart(fig, use_container_width=True)
+    # Strategy Analysis section removed from Main Strategies - moved to Sub Strategies page only
 
 
 # ======================================================================
@@ -3310,6 +3242,20 @@ if view_level == "Main Strategies":
 
 # --- Substrategy View ---
 elif view_level == "Sub Strategies":
+    # Add CSS to reduce margins and improve layout
+    st.markdown("""
+    <style>
+    .main .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 100% !important;
+    }
+    .stDataFrame {
+        width: 100% !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     # Check if we have valid substrategy data
     if df_sub.empty or 'Strategy' not in df_sub.columns or 'RoA' not in df_sub.columns:
         st.warning("No substrategy data available. Please check your upload.")
@@ -4085,12 +4031,12 @@ elif view_level == "Sub Strategies":
                 styled_df = styled_df.set_properties(**{'text-align': 'right'}, subset=weight_columns)
                 styled_df = styled_df.hide(axis="index")
 
-                # Display the styled DataFrame using all columns from weights_display_df
-                st.dataframe(styled_df, use_container_width=True)
+                # Display the styled DataFrame using all columns from weights_display_df (wider table)
+                st.dataframe(styled_df, use_container_width=True, height=None)
             else:
-                st.dataframe(pd.DataFrame(columns=table_display_columns)) # Empty table with headers
+                st.dataframe(pd.DataFrame(columns=table_display_columns), use_container_width=True) # Empty table with headers
         else:
-            st.dataframe(pd.DataFrame(columns=['Substrategy', 'Strategy', 'Weight', 'RoA', 'Contribution', 'Max Sharpe Weight', 'Target Return Weight']))
+            st.dataframe(pd.DataFrame(columns=['Substrategy', 'Strategy', 'Weight', 'RoA', 'Contribution', 'Max Sharpe Weight', 'Target Return Weight']), use_container_width=True)
 
         # --- START: New code for Bar Chart and Sum Check ---
 
@@ -4167,38 +4113,154 @@ elif view_level == "Sub Strategies":
 
         # --- END: New code for Bar Chart and Sum Check ---
         
-        # Add correlation matrix if we have monthly returns data
-        if monthly_returns is not None and len(monthly_returns.columns) > 1:
-            st.markdown("### Strategy Correlation Matrix")
-            
-            # Calculate the correlation matrix
-            corr_matrix = monthly_returns.corr()
-            
-            # Format the correlation matrix for display
-            corr_df = corr_matrix.copy()
-            
-            # Define the custom colormap (Blue-White-Teal)
-            # Blue for negative (-1), White for zero (0), Teal for positive (+1)
-            # (R, G, B) tuples: Blue (0.1, 0.4, 0.7), White (1,1,1), Teal (0.0, 0.7, 0.7)
-            cmap_colors = [(0.1, 0.4, 0.7), (1, 1, 1), (0.0, 0.7, 0.7)]
-            cmap_substrat = LinearSegmentedColormap.from_list('SubstratBlueWhiteTeal', cmap_colors, N=256)
-
-            # Apply styling using background_gradient and format numbers
-            # Ensure corr_df contains numeric data before this step
-            styled_corr = corr_df.style.background_gradient(
-                cmap=cmap_substrat,
-                axis=None,
-                vmin=-1.0,
-                vmax=1.0
-            ).format("{:.2f}")
-            
-            # Display the correlation matrix
-            st.write("Substrategy Correlation Matrix:")
-            st.dataframe(styled_corr, use_container_width=True)
-            
-            st.markdown("""
-            <div style='font-size:0.85em;color:#666;margin-top:5px;'>
-            Correlation values range from -1.0 (perfect negative correlation) to 1.0 (perfect positive correlation). 
-            Values close to 0 indicate little to no correlation between strategies.
-            </div>
-            """, unsafe_allow_html=True)
+        # Add Strategy Analysis section for Sub Strategies
+        try:
+            # Load the Aggregate Monthly RoA spreadsheet to get sub-strategy data
+            aggregate_monthly_path = "Aggregate Monthly RoA.xlsx"
+            if os.path.exists(aggregate_monthly_path):
+                aggregate_monthly_data = pd.read_excel(aggregate_monthly_path)
+                
+                # Get sub-strategy columns (excluding main strategies and Month)
+                main_strategies = ['ABS F1', 'AIRCRAFT F1', 'CMBS F1', 'CLO F1', 'SHORT TERM F1', 'AGGREGATE']
+                substrategy_columns = [col for col in aggregate_monthly_data.columns 
+                                     if col not in ['Month'] + main_strategies]
+                
+                if len(substrategy_columns) > 0:
+                    st.markdown("""
+                    <div style='background-color:#f5f9fc; padding:10px; border-radius:8px; margin:15px 0 10px 0;'>
+                        <span style='font-size:16px; font-weight:600; color:#1867a7;'>Sub-Strategy Analysis</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Create two columns for the analysis
+                    analysis_cols = st.columns(2)
+                    
+                    with analysis_cols[0]:
+                        st.markdown("**Sub-Strategies by Sharpe Ratio**")
+                        
+                        try:
+                            # Calculate Sharpe ratios for sub-strategies with sufficient data
+                            sharpe_ratios = []
+                            risk_free_rate = short_term_yield / 100.0  # Convert to decimal
+                            min_data_points = 5  # Minimum data points required
+                            
+                            for col in substrategy_columns:
+                                if col in aggregate_monthly_data.columns:
+                                    monthly_rets = aggregate_monthly_data[col].dropna()
+                                    # Only include sub-strategies with sufficient data points
+                                    if len(monthly_rets) >= min_data_points:
+                                        # Calculate annualized return and volatility
+                                        cumulative_return = (1 + monthly_rets).prod() - 1
+                                        num_months = len(monthly_rets)
+                                        annual_return = (1 + cumulative_return) ** (12 / num_months) - 1
+                                        annual_vol = monthly_rets.std() * np.sqrt(12)
+                                        
+                                        # Calculate Sharpe ratio (exclude vol < 1%)
+                                        if annual_vol > 0 and annual_vol * 100 >= 1.0:  # Exclude vol < 1%
+                                            sharpe = (annual_return - risk_free_rate) / annual_vol
+                                            sharpe_ratios.append({
+                                                'Sub-Strategy': col,
+                                                'Sharpe Ratio': sharpe,
+                                                'Annual Return': annual_return * 100,
+                                                'Annual Vol': annual_vol * 100
+                                            })
+                            
+                            # Create DataFrame and sort by Sharpe ratio (descending)
+                            if sharpe_ratios:
+                                sharpe_df = pd.DataFrame(sharpe_ratios)
+                                sharpe_df = sharpe_df.sort_values('Sharpe Ratio', ascending=False)
+                                
+                                # Format for display
+                                display_df = sharpe_df.copy()
+                                display_df['Sharpe Ratio'] = display_df['Sharpe Ratio'].apply(lambda x: f"{x:.2f}")
+                                display_df['Annual Return'] = display_df['Annual Return'].apply(lambda x: f"{x:.1f}%")
+                                display_df['Annual Vol'] = display_df['Annual Vol'].apply(lambda x: f"{x:.1f}%")
+                                
+                                # Display the table (expanded to show all data)
+                                st.dataframe(display_df, use_container_width=True)
+                            else:
+                                st.info("No sub-strategy data available for Sharpe ratio calculation.")
+                                
+                        except Exception as e:
+                            st.error(f"Error calculating sub-strategy Sharpe ratios: {e}")
+                    
+                    with analysis_cols[1]:
+                        st.markdown("**Highest Sub-Strategy Correlations**")
+                        
+                        try:
+                            # Filter sub-strategies with sufficient data (at least 5 data points)
+                            min_data_points = 5
+                            valid_substrategy_columns = []
+                            
+                            for col in substrategy_columns:
+                                if col in aggregate_monthly_data.columns:
+                                    non_null_count = aggregate_monthly_data[col].count()
+                                    if non_null_count >= min_data_points:
+                                        valid_substrategy_columns.append(col)
+                            
+                            if len(valid_substrategy_columns) >= 2:
+                                # Get data for valid sub-strategies only
+                                substrategy_data = aggregate_monthly_data[valid_substrategy_columns]
+                                
+                                # Calculate correlation matrix
+                                corr_matrix = substrategy_data.corr()
+                                
+                                # Find highest correlations (excluding self-correlations)
+                                correlation_pairs = []
+                                for i in range(len(corr_matrix.columns)):
+                                    for j in range(i+1, len(corr_matrix.columns)):
+                                        strategy1 = corr_matrix.columns[i]
+                                        strategy2 = corr_matrix.columns[j]
+                                        correlation = corr_matrix.iloc[i, j]
+                                        
+                                        if not pd.isna(correlation):
+                                            correlation_pairs.append({
+                                                'Sub-Strategy Pair': f"{strategy1} ↔ {strategy2}",
+                                                'Correlation': correlation
+                                            })
+                                
+                                # Sort by absolute correlation (highest first)
+                                if correlation_pairs:
+                                    corr_df = pd.DataFrame(correlation_pairs)
+                                    corr_df = corr_df.sort_values('Correlation', key=abs, ascending=False)
+                                    
+                                    # Format for display
+                                    display_corr_df = corr_df.copy()
+                                    display_corr_df['Correlation'] = display_corr_df['Correlation'].apply(lambda x: f"{x:.3f}")
+                                    
+                                    # Color code correlations
+                                    def color_correlation(val):
+                                        try:
+                                            num_val = float(val)
+                                            if abs(num_val) > 0.7:
+                                                return 'background-color: rgba(255, 99, 71, 0.3)'  # High correlation - red
+                                            elif abs(num_val) > 0.5:
+                                                return 'background-color: rgba(255, 165, 0, 0.3)'  # Medium correlation - orange
+                                            elif abs(num_val) > 0.3:
+                                                return 'background-color: rgba(255, 255, 0, 0.3)'  # Low correlation - yellow
+                                            else:
+                                                return 'background-color: rgba(144, 238, 144, 0.3)'  # Very low correlation - light green
+                                        except:
+                                            return ''
+                                    
+                                    styled_corr = display_corr_df.style.applymap(color_correlation, subset=['Correlation'])
+                                    st.dataframe(styled_corr, use_container_width=True)
+                                    
+                                    # Add legend
+                                    st.markdown("""
+                                    <div style='font-size:11px; color:#666; margin-top:5px;'>
+                                    🔴 High (>0.7) 🟠 Medium (0.5-0.7) 🟡 Low (0.3-0.5) 🟢 Very Low (<0.3)
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.info("No valid correlation pairs found.")
+                            else:
+                                st.info(f"Need at least 2 sub-strategies with {min_data_points}+ data points for correlation analysis. Found {len(valid_substrategy_columns)} valid sub-strategies.")
+                                
+                        except Exception as e:
+                            st.error(f"Error calculating sub-strategy correlations: {e}")
+            else:
+                st.info("Aggregate Monthly RoA.xlsx not found for sub-strategy analysis.")
+                
+        except Exception as e:
+            st.error(f"Error loading sub-strategy analysis: {e}")
