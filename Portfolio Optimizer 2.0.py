@@ -1955,21 +1955,31 @@ try:
                 substrategy_columns = [col for col in aggregate_monthly_data.columns 
                                      if col not in ['Month'] + main_strategies]
                 
-                # Calculate properly annualized returns for each sub-strategy
+                # Calculate returns for each sub-strategy based on selected period
                 for col in substrategy_columns:
                     if col in aggregate_monthly_data.columns:
                         monthly_returns = aggregate_monthly_data[col].dropna()
                         if len(monthly_returns) > 0:
-                            # Calculate cumulative return first
-                            cumulative_return = (1 + monthly_returns).prod() - 1
+                            # Apply period-specific lookback
+                            if period == "T12M RoA":
+                                # Use last 12 months of data
+                                monthly_returns = monthly_returns.tail(12)
+                            elif period == "T6M RoA":
+                                # Use last 6 months of data
+                                monthly_returns = monthly_returns.tail(6)
+                            # For ITD RoA, use all available data (no change)
                             
-                            # Annualize based on the actual time period
-                            num_months = len(monthly_returns)
-                            if num_months > 0:
-                                # Convert to annualized return: (1 + cumulative_return)^(12/num_months) - 1
-                                annualized_return = (1 + cumulative_return) ** (12 / num_months) - 1
-                                sub_roa_dict[col] = annualized_return
-                                print(f"Sub-strategy '{col}': {num_months} months, Cumulative: {cumulative_return*100:.2f}%, Annualized: {annualized_return*100:.2f}%")
+                            if len(monthly_returns) > 0:
+                                # Calculate cumulative return first
+                                cumulative_return = (1 + monthly_returns).prod() - 1
+                                
+                                # Annualize based on the actual time period used
+                                num_months = len(monthly_returns)
+                                if num_months > 0:
+                                    # Convert to annualized return: (1 + cumulative_return)^(12/num_months) - 1
+                                    annualized_return = (1 + cumulative_return) ** (12 / num_months) - 1
+                                    sub_roa_dict[col] = annualized_return
+                                    print(f"Sub-strategy '{col}' ({period}): {num_months} months, Cumulative: {cumulative_return*100:.2f}%, Annualized: {annualized_return*100:.2f}%")
                 
                 # Clean up substrategy names for matching
                 df_sub['Strategy'] = df_sub['Strategy'].str.strip() if 'Strategy' in df_sub.columns else df_sub['Strategy']
@@ -4147,6 +4157,16 @@ elif view_level == "Sub Strategies":
                             for col in substrategy_columns:
                                 if col in aggregate_monthly_data.columns:
                                     monthly_rets = aggregate_monthly_data[col].dropna()
+                                    
+                                    # Apply period-specific lookback for Sharpe ratio calculation
+                                    if period == "T12M RoA":
+                                        # Use last 12 months of data
+                                        monthly_rets = monthly_rets.tail(12)
+                                    elif period == "T6M RoA":
+                                        # Use last 6 months of data
+                                        monthly_rets = monthly_rets.tail(6)
+                                    # For ITD RoA, use all available data (no change)
+                                    
                                     # Only include sub-strategies with sufficient data points
                                     if len(monthly_rets) >= min_data_points:
                                         # Calculate annualized return and volatility
@@ -4194,13 +4214,32 @@ elif view_level == "Sub Strategies":
                             
                             for col in substrategy_columns:
                                 if col in aggregate_monthly_data.columns:
-                                    non_null_count = aggregate_monthly_data[col].count()
+                                    # Apply period-specific lookback for correlation calculation
+                                    monthly_data_col = aggregate_monthly_data[col].dropna()
+                                    if period == "T12M RoA":
+                                        # Use last 12 months of data
+                                        monthly_data_col = monthly_data_col.tail(12)
+                                    elif period == "T6M RoA":
+                                        # Use last 6 months of data
+                                        monthly_data_col = monthly_data_col.tail(6)
+                                    # For ITD RoA, use all available data (no change)
+                                    
+                                    non_null_count = len(monthly_data_col)
                                     if non_null_count >= min_data_points:
                                         valid_substrategy_columns.append(col)
                             
                             if len(valid_substrategy_columns) >= 2:
-                                # Get data for valid sub-strategies only
-                                substrategy_data = aggregate_monthly_data[valid_substrategy_columns]
+                                # Get data for valid sub-strategies with period-specific lookback
+                                substrategy_data = aggregate_monthly_data[valid_substrategy_columns].copy()
+                                
+                                # Apply period-specific lookback to the correlation data
+                                if period == "T12M RoA":
+                                    # Use last 12 months of data
+                                    substrategy_data = substrategy_data.tail(12)
+                                elif period == "T6M RoA":
+                                    # Use last 6 months of data
+                                    substrategy_data = substrategy_data.tail(6)
+                                # For ITD RoA, use all available data (no change)
                                 
                                 # Calculate correlation matrix
                                 corr_matrix = substrategy_data.corr()
