@@ -1926,17 +1926,81 @@ else:
             # If required columns don't exist in backup, use default weights
             strategy_weights = default_weights.copy()
     else:
-        # Use default weights when no file is uploaded and no backup is available
-        strategy_weights = default_weights.copy()
-        
-        # Create a dummy dataframe for display
-        df = pd.DataFrame({
-            'Strategy': list(default_weights.keys()),
-            'Substrategy': [''] * len(default_weights),
-            'Weight': list(default_weights.values()),
-            'RoA': [0.0] * len(default_weights),
-            'Contribution': [0.0] * len(default_weights)
-        })
+        # Try to load default portfolio_holdings.xlsx file if it exists
+        default_portfolio_file = "portfolio_holdings.xlsx"
+        if os.path.exists(default_portfolio_file):
+            try:
+                st.sidebar.info("🔄 Loading default portfolio data...")
+                holdings_df = pd.read_excel(default_portfolio_file)
+                holdings_df.columns = [col.strip() for col in holdings_df.columns]
+                
+                # Handle Substrategy column variations
+                if "Sub Strategy" in holdings_df.columns:
+                    holdings_df = holdings_df.rename(columns={"Sub Strategy": "Substrategy"})
+                
+                # Filter out HEDGE and CURRENCY
+                holdings_df = holdings_df[~holdings_df["Strategy"].str.contains("HEDGE|CURRENCY", case=False, na=False)]
+                
+                # Remove rows with missing Admin Net MV
+                holdings_df = holdings_df[holdings_df["Admin Net MV"].notna()]
+                
+                # Calculate weights
+                total_mv = holdings_df["Admin Net MV"].sum()
+                holdings_df["Weight"] = holdings_df["Admin Net MV"] / total_mv
+                
+                # Use the default portfolio data
+                df = holdings_df
+                st.sidebar.success("✅ Default portfolio data loaded successfully!")
+                
+                # Calculate strategy weights from default data
+                main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
+                strategy_weights = {}
+                
+                if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
+                    strategy_agg = df.groupby('Strategy').agg({
+                        'Admin Net MV': 'sum'
+                    }).reset_index()
+                    
+                    strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
+                    
+                    total_mv = strategy_agg['Admin Net MV'].sum()
+                    if total_mv > 0:
+                        for _, row in strategy_agg.iterrows():
+                            strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
+                    
+                    # Fill in missing strategies with zero weight
+                    for strategy in main_strategies:
+                        if strategy not in strategy_weights:
+                            strategy_weights[strategy] = 0.0
+                else:
+                    strategy_weights = default_weights.copy()
+                    
+            except Exception as e:
+                st.sidebar.error(f"❌ Error loading default portfolio file: {e}")
+                # Fall back to default weights and dummy dataframe
+                strategy_weights = default_weights.copy()
+                df = pd.DataFrame({
+                    'Strategy': list(default_weights.keys()),
+                    'Substrategy': [''] * len(default_weights),
+                    'Weight': list(default_weights.values()),
+                    'RoA': [0.0] * len(default_weights),
+                    'Contribution': [0.0] * len(default_weights)
+                })
+        else:
+            # No uploaded file, no backup data, and no default file available
+            st.sidebar.warning("⚠️ No portfolio holdings data available. Please upload a portfolio holdings file.")
+            
+            # Use default weights when no file is uploaded and no backup is available
+            strategy_weights = default_weights.copy()
+            
+            # Create a dummy dataframe for display
+            df = pd.DataFrame({
+                'Strategy': list(default_weights.keys()),
+                'Substrategy': [''] * len(default_weights),
+                'Weight': list(default_weights.values()),
+                'RoA': [0.0] * len(default_weights),
+                'Contribution': [0.0] * len(default_weights)
+            })
     
     # If we have RoA Master data, add RoA values
     if roa_master is not None and not roa_master.empty:
@@ -2240,25 +2304,74 @@ try:
         if len(short_term_mm_idx) > 0:
             df_sub.loc[short_term_mm_idx, 'RoA'] = 0.042  # 4.2% annual yield
             print(f"Set SHORT TERM MM RoA to 4.2% annual yield")
-        
         # Normalize weights to ensure they sum to 1.0 (100%)
         weight_sum = df_sub['Weight'].sum()
         if weight_sum > 0:
             df_sub['Weight'] = df_sub['Weight'] / weight_sum
-            
-        # Calculate contribution
-        df_sub['Contribution'] = df_sub['Weight'] * df_sub['RoA']
-    else:
-        # Create an empty DataFrame with the required columns
-        df_sub = pd.DataFrame(columns=['Strategy', 'Substrategy', 'Weight', 'RoA', 'Contribution'])
-        
-        # If we have at least Strategy column
-        if 'Strategy' in df.columns:
-            # Use Strategy as Substrategy
-            df_sub = df[['Strategy']].copy()
-            df_sub['Substrategy'] = df_sub['Strategy']
-            df_sub['Weight'] = 0.0
-            df_sub['RoA'] = 0.0
+        else:
+            # Try to load default portfolio_holdings.xlsx file if it exists
+            default_portfolio_file = "portfolio_holdings.xlsx"
+            if os.path.exists(default_portfolio_file):
+                try:
+                    st.sidebar.info("🔄 Loading default portfolio data...")
+                    holdings_df = pd.read_excel(default_portfolio_file)
+                    holdings_df.columns = [col.strip() for col in holdings_df.columns]
+                    
+                    # Handle Substrategy column variations
+                    if "Sub Strategy" in holdings_df.columns:
+                        holdings_df = holdings_df.rename(columns={"Sub Strategy": "Substrategy"})
+                    
+                    # Filter out HEDGE and CURRENCY
+                    holdings_df = holdings_df[~holdings_df["Strategy"].str.contains("HEDGE|CURRENCY", case=False, na=False)]
+                    
+                    # Remove rows with missing Admin Net MV
+                    holdings_df = holdings_df[holdings_df["Admin Net MV"].notna()]
+                    
+                    # Calculate weights
+                    total_mv = holdings_df["Admin Net MV"].sum()
+                    holdings_df["Weight"] = holdings_df["Admin Net MV"] / total_mv
+                    
+                    # Use the default portfolio data
+                    df = holdings_df
+                    st.sidebar.success("✅ Default portfolio data loaded successfully!")
+                    
+                    # Calculate strategy weights from default data
+                    main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
+                    strategy_weights = {}
+                    
+                    if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
+                        strategy_agg = df.groupby('Strategy').agg({
+                            'Admin Net MV': 'sum'
+                        }).reset_index()
+                        
+                        strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
+                        
+                        total_mv = strategy_agg['Admin Net MV'].sum()
+                        if total_mv > 0:
+                            for _, row in strategy_agg.iterrows():
+                                strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
+                        
+                        # Fill in missing strategies with zero weight
+                        for strategy in main_strategies:
+                            if strategy not in strategy_weights:
+                                strategy_weights[strategy] = 0.0
+                    else:
+                        strategy_weights = default_weights.copy()
+                        
+                except Exception as e:
+                    st.sidebar.error(f"❌ Error loading default portfolio file: {e}")
+                    # Fall back to empty DataFrame
+                    df = pd.DataFrame(columns=['Strategy', 'Substrategy', 'Admin Net MV', 'Weight'])
+                    strategy_weights = default_weights.copy()
+            else:
+                # No uploaded file, no backup data, and no default file available
+                st.sidebar.warning("⚠️ No portfolio holdings data available. Please upload a portfolio holdings file.")
+                
+                # Create a default empty DataFrame with required columns
+                df = pd.DataFrame(columns=['Strategy', 'Substrategy', 'Admin Net MV', 'Weight'])
+                
+                # Use default weights for main strategies
+                strategy_weights = default_weights.copy()
             df_sub['Contribution'] = 0.0
             
 except Exception as e:
