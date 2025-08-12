@@ -929,8 +929,145 @@ def match_substrategies_to_monthly_data(substrategies, monthly_data_columns, mai
     
     return matches, match_scores
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_return=0.20):
+def allocate_substrategy_weights_hierarchical(substrategy_returns, main_max_sharpe_weights, main_target_weights, risk_free_rate=0.02):
+    """
+    Allocate sub-strategy weights hierarchically within main strategy bounds.
+    This ensures sub-strategies provide granular detail within main strategy allocations.
+    
+    Parameters:
+    -----------
+    substrategy_returns : pd.DataFrame
+        DataFrame with monthly returns for each substrategy
+    main_max_sharpe_weights : dict
+        Main strategy weights from Max Sharpe optimization
+    main_target_weights : dict
+        Main strategy weights from Target Return optimization
+    risk_free_rate : float
+        Annual risk-free rate
+        
+    Returns:
+    --------
+    tuple
+        (max_sharpe_weights_dict, target_weights_dict, max_sharpe_metrics, target_metrics)
+    """
+    print("\n==== STARTING HIERARCHICAL SUBSTRATEGY ALLOCATION ====\n")
+    
+    if substrategy_returns is None or substrategy_returns.empty:
+        print("No substrategy returns data available")
+        return {}, {}, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+    
+    # Define mapping from sub-strategies to main strategies
+    # Main strategies: ['ABS F1', 'AIRCRAFT F1', 'CMBS F1', 'CLO F1', 'SHORT TERM']
+    substrategy_to_main = {}
+    
+    for col in substrategy_returns.columns:
+        col_upper = col.upper()
+        if any(x in col_upper for x in ['ABS', 'LEGACY', 'MEZZ', 'SENIOR', 'TRADABLE', 'E NOTES']):
+            substrategy_to_main[col] = 'ABS F1'
+        elif any(x in col_upper for x in ['AIRCRAFT', 'AIR', 'EETC']):
+            substrategy_to_main[col] = 'AIRCRAFT F1'
+        elif any(x in col_upper for x in ['CMBS', 'SASB', 'AGENCY', 'PRIVATE', 'IO']):
+            substrategy_to_main[col] = 'CMBS F1'
+        elif any(x in col_upper for x in ['CLO']):
+            substrategy_to_main[col] = 'CLO F1'
+        elif any(x in col_upper for x in ['SHORT TERM', 'CASH', 'MM']):
+            substrategy_to_main[col] = 'SHORT TERM'  # Note: SHORT TERM doesn't have F1 suffix
+        elif 'MPL' in col_upper:  # Mortgage Purchase Loans
+            substrategy_to_main[col] = 'ABS F1'  # Assign MPL to ABS F1
+        elif 'HOME IMPROVEMENT' in col_upper:
+            substrategy_to_main[col] = 'ABS F1'  # Assign Home Improvement to ABS F1
+        else:
+            # Default assignment - could be improved with more specific rules
+            substrategy_to_main[col] = 'ABS F1'  # Default to ABS if unclear
+    
+    print(f"Sub-strategy to main strategy mapping: {substrategy_to_main}")
+    
+    # Group sub-strategies by main strategy
+    main_to_substrategies = {}
+    for substrat, main_strat in substrategy_to_main.items():
+        if main_strat not in main_to_substrategies:
+            main_to_substrategies[main_strat] = []
+        main_to_substrategies[main_strat].append(substrat)
+    
+    print(f"Main strategy to sub-strategies mapping: {main_to_substrategies}")
+    
+    # Calculate sub-strategy performance metrics
+    filled_returns = substrategy_returns.fillna(0)
+    annual_returns = filled_returns.mean() * 12
+    annual_vol = filled_returns.std() * np.sqrt(12)
+    sharpe_ratios = (annual_returns - risk_free_rate) / annual_vol
+    
+    # Replace NaN/inf values with 0
+    sharpe_ratios = sharpe_ratios.fillna(0).replace([np.inf, -np.inf], 0)
+    
+    # Allocate weights for Max Sharpe portfolio
+    max_sharpe_substrat_weights = {}
+    target_substrat_weights = {}
+    
+    for main_strat, substrategies in main_to_substrategies.items():
+        main_weight_sharpe = main_max_sharpe_weights.get(main_strat, 0.0)
+        main_weight_target = main_target_weights.get(main_strat, 0.0)
+        
+        if len(substrategies) == 0:
+            continue
+            
+        # For Max Sharpe: allocate based on Sharpe ratios within the main strategy
+        substrat_sharpes = {s: sharpe_ratios.get(s, 0.0) for s in substrategies}
+        total_sharpe = sum(max(0, s) for s in substrat_sharpes.values())  # Only positive Sharpe ratios
+        
+        if total_sharpe > 0:
+            for substrat in substrategies:
+                sharpe_weight = max(0, substrat_sharpes[substrat]) / total_sharpe
+                max_sharpe_substrat_weights[substrat] = main_weight_sharpe * sharpe_weight
+        else:
+            # Equal allocation if no positive Sharpe ratios
+            equal_weight = main_weight_sharpe / len(substrategies)
+            for substrat in substrategies:
+                max_sharpe_substrat_weights[substrat] = equal_weight
+        
+        # For Target Return: allocate based on returns within the main strategy
+        substrat_returns = {s: annual_returns.get(s, 0.0) for s in substrategies}
+        total_return = sum(max(0, r) for r in substrat_returns.values())  # Only positive returns
+        
+        if total_return > 0:
+            for substrat in substrategies:
+                return_weight = max(0, substrat_returns[substrat]) / total_return
+                target_substrat_weights[substrat] = main_weight_target * return_weight
+        else:
+            # Equal allocation if no positive returns
+            equal_weight = main_weight_target / len(substrategies)
+            for substrat in substrategies:
+                target_substrat_weights[substrat] = equal_weight
+    
+    # Calculate portfolio metrics
+    def calculate_portfolio_metrics(weights_dict):
+        if not weights_dict:
+            return 0.0, 0.0, 0.0
+        
+        weights_series = pd.Series(weights_dict)
+        portfolio_return = (annual_returns * weights_series).sum()
+        
+        # Calculate portfolio volatility
+        weights_array = np.array([weights_dict.get(col, 0.0) for col in filled_returns.columns])
+        cov_matrix = filled_returns.cov() * 12  # Annualized
+        portfolio_var = np.dot(weights_array.T, np.dot(cov_matrix.values, weights_array))
+        portfolio_vol = np.sqrt(max(0, portfolio_var))
+        
+        sharpe = (portfolio_return - risk_free_rate) / portfolio_vol if portfolio_vol > 0 else 0.0
+        
+        return portfolio_return, portfolio_vol, sharpe
+    
+    max_sharpe_metrics = calculate_portfolio_metrics(max_sharpe_substrat_weights)
+    target_metrics = calculate_portfolio_metrics(target_substrat_weights)
+    
+    print(f"Max Sharpe sub-strategy weights: {max_sharpe_substrat_weights}")
+    print(f"Target Return sub-strategy weights: {target_substrat_weights}")
+    print(f"Max Sharpe metrics: Return={max_sharpe_metrics[0]:.3f}, Vol={max_sharpe_metrics[1]:.3f}, Sharpe={max_sharpe_metrics[2]:.3f}")
+    print(f"Target Return metrics: Return={target_metrics[0]:.3f}, Vol={target_metrics[1]:.3f}, Sharpe={target_metrics[2]:.3f}")
+    
+    return max_sharpe_substrat_weights, target_substrat_weights, max_sharpe_metrics, target_metrics
+
+def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_return=0.20, constraints=None):
     """
     Optimize substrategy weights for maximum Sharpe ratio and target return.
     This is a separate optimization from the efficient frontier to avoid affecting Main Strategies.
@@ -1089,8 +1226,46 @@ def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_re
     # Bounds: 0 to 1 for each weight (no short selling)
     bounds = tuple((0, 1) for _ in range(num_assets))
     
-    # Constraints: sum of weights is 1
-    constraints = ({'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1})
+    # Base constraint: sum of weights is 1
+    optimizer_constraints = [{'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1}]
+    
+    # Add main strategy constraints if provided
+    if constraints is not None:
+        print(f"Applying main strategy constraints: {constraints}")
+        
+        # Apply Aircraft constraint
+        if constraints.get('use_aircraft_constraint', False):
+            aircraft_max = constraints.get('aircraft_max', 0.25)
+            # Find aircraft sub-strategies (those containing 'AIRCRAFT' in name)
+            aircraft_indices = [i for i, col in enumerate(processed_returns.columns) 
+                              if 'AIRCRAFT' in col.upper() or 'AIR' in col.upper()]
+            if aircraft_indices:
+                def aircraft_constraint(weights):
+                    aircraft_total = sum(weights[i] for i in aircraft_indices)
+                    return aircraft_max - aircraft_total  # Must be >= 0
+                optimizer_constraints.append({'type': 'ineq', 'fun': aircraft_constraint})
+                print(f"Added aircraft constraint: max {aircraft_max*100:.1f}% for indices {aircraft_indices}")
+        
+        # Apply Cash/Short Term constraint
+        if constraints.get('use_cash_constraint', False):
+            cash_min = constraints.get('cash_min', 0.05)
+            cash_max = constraints.get('cash_max', 0.10)
+            # Find cash/short term sub-strategies
+            cash_indices = [i for i, col in enumerate(processed_returns.columns) 
+                           if 'SHORT TERM' in col.upper() or 'CASH' in col.upper() or 'MM' in col.upper()]
+            if cash_indices:
+                def cash_min_constraint(weights):
+                    cash_total = sum(weights[i] for i in cash_indices)
+                    return cash_total - cash_min  # Must be >= 0
+                def cash_max_constraint(weights):
+                    cash_total = sum(weights[i] for i in cash_indices)
+                    return cash_max - cash_total  # Must be >= 0
+                optimizer_constraints.append({'type': 'ineq', 'fun': cash_min_constraint})
+                optimizer_constraints.append({'type': 'ineq', 'fun': cash_max_constraint})
+                print(f"Added cash constraints: min {cash_min*100:.1f}%, max {cash_max*100:.1f}% for indices {cash_indices}")
+    
+    # Use the renamed variable for the optimizer
+    constraints_for_optimizer = optimizer_constraints
 
     # Objective function: negative Sharpe ratio
     def neg_sharpe_ratio(weights):
@@ -1118,7 +1293,7 @@ def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_re
 
     # Optimization for Max Sharpe Ratio
     print("\nOptimizing for Max Sharpe Ratio (Substrategies)...")
-    max_sharpe_result = minimize(neg_sharpe_ratio, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
+    max_sharpe_result = minimize(neg_sharpe_ratio, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints_for_optimizer)
     
     if not max_sharpe_result.success:
         print(f"Max Sharpe optimization failed: {max_sharpe_result.message}")
@@ -1139,10 +1314,39 @@ def optimize_substrategy_weights(monthly_returns, risk_free_rate=0.02, target_re
     # --- END DIAGNOSTIC PRINTS ---\n")
 
     # Constraints for target return: sum of weights is 1, and portfolio return meets target
-    constraints_target = (
+    constraints_target = [
         {'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1},
         {'type': 'eq', 'fun': lambda weights: np.sum(mean_returns.values * weights) - target_return}
-    )
+    ]
+    
+    # Add the same main strategy constraints to target return optimization
+    if constraints is not None:
+        # Apply Aircraft constraint
+        if constraints.get('use_aircraft_constraint', False):
+            aircraft_max = constraints.get('aircraft_max', 0.25)
+            aircraft_indices = [i for i, col in enumerate(processed_returns.columns) 
+                              if 'AIRCRAFT' in col.upper() or 'AIR' in col.upper()]
+            if aircraft_indices:
+                def aircraft_constraint_target(weights):
+                    aircraft_total = sum(weights[i] for i in aircraft_indices)
+                    return aircraft_max - aircraft_total  # Must be >= 0
+                constraints_target.append({'type': 'ineq', 'fun': aircraft_constraint_target})
+        
+        # Apply Cash/Short Term constraint
+        if constraints.get('use_cash_constraint', False):
+            cash_min = constraints.get('cash_min', 0.05)
+            cash_max = constraints.get('cash_max', 0.10)
+            cash_indices = [i for i, col in enumerate(processed_returns.columns) 
+                           if 'SHORT TERM' in col.upper() or 'CASH' in col.upper() or 'MM' in col.upper()]
+            if cash_indices:
+                def cash_min_constraint_target(weights):
+                    cash_total = sum(weights[i] for i in cash_indices)
+                    return cash_total - cash_min  # Must be >= 0
+                def cash_max_constraint_target(weights):
+                    cash_total = sum(weights[i] for i in cash_indices)
+                    return cash_max - cash_total  # Must be >= 0
+                constraints_target.append({'type': 'ineq', 'fun': cash_min_constraint_target})
+                constraints_target.append({'type': 'ineq', 'fun': cash_max_constraint_target})
     
     # Optimization for Target Return
     print("\nOptimizing for Target Return (Substrategies)...")
@@ -3252,16 +3456,26 @@ if view_level == "Main Strategies":
 
 # --- Substrategy View ---
 elif view_level == "Sub Strategies":
-    # Add CSS to reduce margins and improve layout
+    # Add CSS to reduce margins and improve layout for Sub Strategies
     st.markdown("""
     <style>
     .main .block-container {
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
         max-width: 100% !important;
+        width: 100% !important;
     }
     .stDataFrame {
         width: 100% !important;
+    }
+    .stDataFrame > div {
+        width: 100% !important;
+        overflow-x: visible !important;
+    }
+    /* Ensure Strategy Analysis tables are fully visible */
+    .stDataFrame table {
+        width: 100% !important;
+        table-layout: auto !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -3631,17 +3845,17 @@ elif view_level == "Sub Strategies":
             st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
         # Chart is now displayed in the column layout above
         
-        # --- Efficient Frontier Section for Substrategies ---
-        if len(df_sub) >= 3:  # Need at least 3 substrategies for meaningful optimization
-            st.markdown("""
-            <div style='background-color:#f5f9fc;padding:12px 0 8px 0;border-radius:8px;margin:20px 0 15px 0;'>
-                <span style='font-size:20px;font-weight:600;color:#1867a7;'>Efficient Frontier - Substrategies</span>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Get list of substrategies
-            substrategies = df_sub['Substrategy'].tolist()
-            annual_returns = {row['Substrategy']: row['RoA'] for _, row in df_sub.iterrows()}
+        # --- USE EXISTING SUB-STRATEGY DATA ---
+        # df_sub is already loaded and working for Sub Strategies Contributions table above
+        # Just ensure it's stored in session state for the optimization
+        if 'df_sub' in locals() and not df_sub.empty:
+            st.session_state.df_sub = df_sub
+            st.session_state.substrategies = df_sub['Substrategy'].tolist()
+            st.session_state.current_weights = df_sub['Weight'].tolist()
+        else:
+            st.error("❌ Sub-strategy data not available - please ensure data is loaded above")
+        
+        # Efficient Frontier section completely removed per user request
             
         # Load monthly ROA data
         try:
@@ -3739,389 +3953,20 @@ elif view_level == "Sub Strategies":
         max_sharpe_return, max_sharpe_vol = 0, 0
         target_return_value, target_vol = 0, 0
         
-        # Add buttons for data loading
-        col1, col2 = st.columns([1, 1])  # Two columns for the buttons
+        # Data loading buttons removed per user request
         
-        # Check if we have data in session state
-        has_data = 'monthly_roa_data' in st.session_state and not st.session_state.monthly_roa_data.empty
+        # Clear any cached UI elements that might be causing persistent sections
+        if 'efficient_frontier_cache' in st.session_state:
+            del st.session_state['efficient_frontier_cache']
         
-        # Check if we have a backup file
-        latest_data, backup_datetime = load_latest_portfolio_data() if not has_data else (None, None)
+        # Force clear any optimization-related session state
+        optimization_keys = [k for k in st.session_state.keys() if 'efficient' in k.lower() or 'frontier' in k.lower()]
+        for key in optimization_keys:
+            del st.session_state[key]
         
-        with col1:
-            if st.button("Load Aggregate Monthly RoA.xlsx", key="load_monthly_roa_substrategy"):
-                try:
-                    # Try multiple possible file paths for Aggregate Monthly RoA.xlsx
-                    possible_paths = [
-                        "Aggregate Monthly RoA.xlsx",
-                        os.path.join(os.getcwd(), "Aggregate Monthly RoA.xlsx"),
-                        os.path.join(os.path.dirname(os.path.abspath(__file__)), "Aggregate Monthly RoA.xlsx"),
-                        "./portfolio_optimizer_streamlit/Aggregate Monthly RoA.xlsx",
-                        "./Aggregate Monthly RoA.xlsx"
-                    ]
-                    
-                    file_path = None
-                    for path in possible_paths:
-                        if os.path.exists(path):
-                            file_path = path
-                            break
-                    
-                    if file_path is None:
-                        raise FileNotFoundError("Could not find Aggregate Monthly RoA.xlsx in any of the expected locations")
-                    monthly_roa_data = pd.read_excel(file_path)
-                    
-                    # Process the data (convert to numeric, handle dates)
-                    if 'Month' in monthly_roa_data.columns:
-                        monthly_roa_data.set_index('Month', inplace=True)
-                    
-                    # Convert percentage strings to floats if needed
-                    for col in monthly_roa_data.columns:
-                        if monthly_roa_data[col].dtype == 'object':
-                            try:
-                                monthly_roa_data[col] = monthly_roa_data[col].str.rstrip('%').astype('float') / 100.0
-                            except:
-                                pass
-                    
-                    # Save a backup of this data with timestamp
-                    backup_path = save_portfolio_data_with_timestamp(monthly_roa_data)
-                    
-                    # Store in session state
-                    st.session_state.monthly_roa_data = monthly_roa_data
-                    st.success(f"Successfully loaded Aggregate Monthly RoA.xlsx with {len(monthly_roa_data.columns)} columns")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error loading file: {e}")
-            
-            # Add explanation text under the button
-            st.markdown("<div style='font-size:0.85em;color:#666;margin-top:5px;'>For Custom Data Analysis, Upload Template with User RoA Assumptions</div>", unsafe_allow_html=True)
+        # All optimization code completely removed per user request
         
-        # Add button to load the latest backup if available
-        with col2:
-            if latest_data is not None and backup_datetime is not None:
-                if st.button(f"Load Last Backup ({backup_datetime})", key="load_backup_data"):
-                    try:
-                        # Process the data (convert to numeric, handle dates if needed)
-                        if 'Month' in latest_data.columns and not latest_data.index.name == 'Month':
-                            latest_data.set_index('Month', inplace=True)
-                        
-                        # Store in session state
-                        st.session_state.monthly_roa_data = latest_data
-                        st.success(f"Successfully loaded backup data from {backup_datetime} with {len(latest_data.columns)} columns")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error loading backup data: {e}")
-                
-                # Add explanation text under the button
-                st.markdown(f"<div style='font-size:0.85em;color:#666;margin-top:5px;'>Last saved portfolio data from {backup_datetime}</div>", unsafe_allow_html=True)
-            elif not has_data:
-                st.markdown("<div style='font-size:0.85em;color:#666;margin-top:20px;'>No backup data available</div>", unsafe_allow_html=True)
-        
-        # Only calculate optimization if we have valid monthly returns data
-        if monthly_returns is not None and not monthly_returns.empty:
-            # Use separate optimization function for substrategies
-            
-            # Based on the Monthly RoA Total structure, the main strategies are:
-            main_strategies = ['ABS F1', 'AIRCRAFT F1', 'CMBS F1', 'CLO F1', 'SHORT TERM']
-            
-            # Everything else in the columns should be substrategies
-            substrategy_columns = [col for col in monthly_returns.columns if col not in main_strategies]
-            
-            # Create a new DataFrame with only substrategy columns
-            substrategy_returns = monthly_returns[substrategy_columns]
-            
-            # Fill missing values with 0
-            returns_filled = substrategy_returns.fillna(0)
-            
-            # Calculate mean returns and covariance matrix using only substrategy data
-            mean_returns = returns_filled.mean() * 12  # Annualize
-            cov_matrix = returns_filled.cov() * 12  # Annualize
-            
-            # Get number of assets and strategy names
-            num_assets = len(returns_filled.columns)
-            strategies_from_monthly_returns = returns_filled.columns.tolist() # Renamed to avoid conflict with UI 'strategies'
-            
-            # Create a comprehensive mapping dictionary based on the RoA Master Sheet
-            name_mapping = {
-                # Direct mappings
-                '1.0 LEGACY ABS F1': '1.0 LEGACY ABS F1',
-                '1L EETC F1': '1L EETC F1',
-                '2L EETC F1': '2L EETC F1',
-                '3.0 MEZZ ABS F1': '3.0 MEZZ ABS F1',
-                '3.0 SENIOR ABS F1': '3.0 SENIOR ABS F1',
-                'AIR UNSECURED F1': 'AIR UNSECURED F1',
-                'AIRCRAFT F1_INCOME': 'AIRCRAFT F1_INCOME',
-                'TRADABLE E NOTES F1': 'TRADABLE E NOTES F1',
-                'CMBS 2.0/3.0 IG F1': 'CMBS 2.0/3.0 IG F1',
-                'CMBS 2.0/3.0 NON-IG F1': 'CMBS 2.0/3.0 NON-IG F1',
-                'CMBS AGENCY F1': 'CMBS AGENCY F1',
-                'CMBS IO F1': 'CMBS IO F1',
-                'CMBS PRIVATE LOANS': 'CMBS PRIVATE LOANS',
-                'CMBS SASB F1': 'CMBS SASB F1',
-                'CMBS SASB F1_INCOME': 'CMBS SASB F1_INCOME',
-                'SHORT TERM F1': 'SHORT TERM F1',
-                'CLO AAA EFF F1': 'CLO AAA EFF F1',
-                'MEZZ HOME IMPROVEMENT F1': 'MEZZ HOME IMPROVEMENT F1',
-                'MEZZ MPL': 'MEZZ MPL',
-                'SENIOR MPL': 'SENIOR MPL',
-                
-                # Additional mappings for common variations
-                'LEGACY ABS F1': '1.0 LEGACY ABS F1',
-                'MEZZ ABS F1': '3.0 MEZZ ABS F1',
-                'SENIOR ABS F1': '3.0 SENIOR ABS F1',
-                'UNSECURED F1': 'AIR UNSECURED F1',
-                'TRADABLE E NOTES 2.0/3.0': 'TRADABLE E NOTES F1',
-                'CLO ETF': 'CLO AAA EFF F1',
-                'IG CMBS 2.0/3.0': 'CMBS 2.0/3.0 IG F1',
-                'NON-IG CMBS 2.0/3.0': 'CMBS 2.0/3.0 NON-IG F1',
-                'AGENCY CMBS': 'CMBS AGENCY F1',
-                'MEZZ ABS': '3.0 MEZZ ABS F1',
-                'SENIOR ABS': '3.0 SENIOR ABS F1',
-                'HOME IMPROVEMENT F1': 'MEZZ HOME IMPROVEMENT F1'
-            }
-            
-            # Add reverse mappings
-            reverse_mapping = {v: k for k, v in name_mapping.items() if k != v}
-            name_mapping.update(reverse_mapping)
-            
-            # Calculate correlation matrix for substrategies
-            corr_matrix = substrategy_returns.corr()
-            
-            # Call the optimize_substrategy_weights function to calculate weights
-            # Explicitly set target return to 20% (0.20)
-            target_return_goal = 0.20  # 20% gross return
-            max_sharpe_weights_dict, target_weights_dict, max_sharpe_metrics_tuple, target_metrics_tuple = optimize_substrategy_weights(substrategy_returns, risk_free_rate=short_term_yield/100.0, target_return=target_return_goal)
-            
-            # Unpack metrics, providing defaults if optimization failed and returned None for metrics
-            if max_sharpe_metrics_tuple:
-                max_sharpe_return, max_sharpe_vol, _ = max_sharpe_metrics_tuple # _ for sharpe ratio
-            else:
-                max_sharpe_return, max_sharpe_vol = 0.0, 0.0 
-            
-            if target_metrics_tuple:
-                # Force target_return_value to match our goal of 20% (0.20)
-                # This ensures the graph displays the correct target return
-                target_return_value = target_return_goal
-                _, target_vol, _ = target_metrics_tuple # _ for unused values
-            else:
-                target_return_value, target_vol = target_return_goal, 0.0
-            
-            if max_sharpe_weights_dict is not None and target_weights_dict is not None:
-                # Update session state with optimized metrics
-                st.session_state.max_sharpe_return_sub = max_sharpe_return * 100
-                st.session_state.max_sharpe_vol_sub = max_sharpe_vol * 100
-                st.session_state.target_return_sub = target_return_value * 100
-                st.session_state.target_vol_sub = target_vol * 100
-                
-                # Align weights to the UI's substrategy list (st.session_state.substrategies)
-                ui_substrategies = st.session_state.get('substrategies', [])
-                max_sharpe_weights_array = np.zeros(len(ui_substrategies))
-                target_weights_array = np.zeros(len(ui_substrategies))
-
-                for i, substrat_ui in enumerate(ui_substrategies):
-                    # Try to find a match in the optimization results
-                    # Method 1: Direct match
-                    if substrat_ui in max_sharpe_weights_dict:
-                        max_sharpe_weights_array[i] = max_sharpe_weights_dict[substrat_ui]
-                    # Method 2: Check mapped name
-                    elif name_mapping.get(substrat_ui) in max_sharpe_weights_dict:
-                        max_sharpe_weights_array[i] = max_sharpe_weights_dict[name_mapping.get(substrat_ui)]
-                    # Method 3: Check if UI name is a value in mapping (reverse lookup)
-                    else:
-                        reverse_matches_sharpe = [k for k, v in name_mapping.items() if v == substrat_ui]
-                        for rev_match_s in reverse_matches_sharpe:
-                            if rev_match_s in max_sharpe_weights_dict:
-                                max_sharpe_weights_array[i] = max_sharpe_weights_dict[rev_match_s]
-                                break # Found a match
-                        
-                    # Repeat for target weights
-                    if substrat_ui in target_weights_dict:
-                        target_weights_array[i] = target_weights_dict[substrat_ui]
-                    elif name_mapping.get(substrat_ui) in target_weights_dict:
-                        target_weights_array[i] = target_weights_dict[name_mapping.get(substrat_ui)]
-                    else:
-                        reverse_matches_target = [k for k, v in name_mapping.items() if v == substrat_ui]
-                        for rev_match_t in reverse_matches_target:
-                            if rev_match_t in target_weights_dict:
-                                target_weights_array[i] = target_weights_dict[rev_match_t]
-                                break # Found a match
-            else:
-                pass # Allow to proceed, arrays will be zeros
-            
-            # Print a message about the optimization status
-            if num_assets >= 2:  # Need at least 2 assets for optimization
-                st.success("Substrategy optimization complete.")
-            else:
-                st.warning("Substrategy optimization requires at least 2 assets with sufficient data.")
-        else:
-            st.warning("Monthly returns data not available for substrategy optimization.")
-        
-        # Prepare data for styling and the Optimal Allocation Weights table
-        st.markdown("### Optimal Allocation Weights")
-        st.markdown("*Showing Current, Max Sharpe Ratio, and Maximum Return allocations*")
-        st.markdown("""<div style='font-size:0.85em;color:#666;margin-top:-10px;margin-bottom:10px;'>
-        • <b>Current Weight</b>: Current portfolio allocation<br>
-        • <b>Max Sharpe Weight</b>: Allocation that maximizes the Sharpe ratio<br>
-        • <b>Maximum Return Weight</b>: Allocation that maximizes portfolio return
-        </div>""", unsafe_allow_html=True)
-
-        if 'substrategies' in locals() and isinstance(substrategies, list) and len(substrategies) > 0 and \
-           'current_weights' in locals() and hasattr(current_weights, '__len__') and \
-           'max_sharpe_weights_array' in locals() and hasattr(max_sharpe_weights_array, '__len__') and \
-           'target_weights_array' in locals() and hasattr(target_weights_array, '__len__'):
-            
-            min_len = min(len(substrategies), len(current_weights), len(max_sharpe_weights_array), len(target_weights_array))
-            
-            substrategies_s = substrategies[:min_len]
-            current_weights_s = current_weights[:min_len]
-            max_sharpe_weights_s = max_sharpe_weights_array[:min_len]
-            target_weights_s = target_weights_array[:min_len]
-
-            strategy_map = {}
-            if 'df_sub' in locals() and isinstance(df_sub, pd.DataFrame) and \
-               'Substrategy' in df_sub.columns and 'Strategy' in df_sub.columns:
-                df_sub_map = df_sub[['Substrategy', 'Strategy']].drop_duplicates(subset=['Substrategy'])
-                strategy_map = pd.Series(df_sub_map.Strategy.values, index=df_sub_map.Substrategy).to_dict()
-
-            # Get RoA values from monthly data based on selected lookback period
-            roa_values = [0.0] * len(substrategies_s)  # Default to 0.0
-            contribution_values = [0.0] * len(substrategies_s)  # Default to 0.0
-            
-            # Check if we have monthly RoA data in session state
-            if 'monthly_roa_data' in st.session_state and not st.session_state.monthly_roa_data.empty:
-                monthly_data = st.session_state.monthly_roa_data
-                
-                # For each substrategy, try to find matching RoA in the monthly data
-                for i, substrat in enumerate(substrategies_s):
-                    # Try direct match first
-                    if substrat in monthly_data.columns:
-                        roa_values[i] = monthly_data[substrat].mean() * 12  # Annualize monthly return
-                        contribution_values[i] = roa_values[i] * current_weights_s[i]  # Calculate contribution
-                    else:
-                        # Try to find a match using the name mapping
-                        for alt_name, std_name in name_mapping.items():
-                            if std_name == substrat and alt_name in monthly_data.columns:
-                                roa_values[i] = monthly_data[alt_name].mean() * 12  # Annualize monthly return
-                                contribution_values[i] = roa_values[i] * current_weights_s[i]  # Calculate contribution
-                                break
-            
-            weights_display_df = pd.DataFrame({
-                'Substrategy': substrategies_s,
-                'Strategy': [strategy_map.get(s, 'Unknown') for s in substrategies_s],
-                'Weight': [w * 100 for w in current_weights_s],
-                'RoA': [r * 100 for r in roa_values],  # Convert to percentage
-                'Contribution': [c * 100 for c in contribution_values],  # Convert to percentage
-                'Max Sharpe Weight': [w * 100 for w in max_sharpe_weights_s],
-                'Target Return Weight': [w * 100 for w in target_weights_s]
-            })
-
-            weight_columns = ['Weight', 'RoA', 'Contribution', 'Max Sharpe Weight', 'Target Return Weight']
-            # Columns to actually show in the table (Strategy column will be used for coloring but might be hidden if not in this list)
-            # For now, let's include 'Strategy' in the display.
-            table_display_columns = ['Substrategy', 'Strategy'] + weight_columns
-
-            if not weights_display_df.empty:
-                styled_df = weights_display_df.style
-                
-                try:
-                    # Apply row coloring based on 'Strategy'. Uses color_by_strategy and color_patterns.
-                    styled_df = styled_df.apply(color_by_strategy, axis=1, subset=table_display_columns)
-                except Exception as e:
-                    st.caption(f"Note: Could not apply strategy row coloring. {e}")
-
-                for col in weight_columns:
-                    if col in weights_display_df.columns:
-                        styled_df = styled_df.background_gradient(
-                            subset=[col], cmap='Blues', low=0.15, high=0.85 # Subtle heatmap
-                        )
-                
-                format_dict = {col: '{:.2f}%' for col in weight_columns}
-                styled_df = styled_df.format(format_dict)
-                
-                styled_df = styled_df.set_properties(**{'text-align': 'left'}, subset=['Substrategy', 'Strategy'])
-                styled_df = styled_df.set_properties(**{'text-align': 'right'}, subset=weight_columns)
-                styled_df = styled_df.hide(axis="index")
-
-                # Display the styled DataFrame using all columns from weights_display_df (wider table)
-                st.dataframe(styled_df, use_container_width=True, height=None)
-            else:
-                st.dataframe(pd.DataFrame(columns=table_display_columns), use_container_width=True) # Empty table with headers
-        else:
-            st.dataframe(pd.DataFrame(columns=['Substrategy', 'Strategy', 'Weight', 'RoA', 'Contribution', 'Max Sharpe Weight', 'Target Return Weight']), use_container_width=True)
-
-        # --- START: New code for Bar Chart and Sum Check ---
-
-        # 1. Prepare data for plot and sum (using raw numeric weights)
-        if 'substrategies' in locals() and isinstance(substrategies, list) and len(substrategies) > 0 and \
-           'current_weights' in locals() and hasattr(current_weights, '__len__') and len(current_weights) == len(substrategies) and \
-           'max_sharpe_weights_array' in locals() and hasattr(max_sharpe_weights_array, '__len__') and len(max_sharpe_weights_array) == len(substrategies) and \
-           'target_weights_array' in locals() and hasattr(target_weights_array, '__len__') and len(target_weights_array) == len(substrategies):
-
-            # Sort data by 'Current Weight' descending for the plot
-            # Combine, sort, and then separate the arrays to maintain correspondence
-            combined_data = list(zip(substrategies, current_weights, max_sharpe_weights_array, target_weights_array))
-            # Sort by current_weight (the second element in each tuple), descending
-            combined_data.sort(key=lambda x: x[1], reverse=True)
-            
-            sorted_substrategies = [item[0] for item in combined_data]
-            sorted_current_weights = [item[1] for item in combined_data]
-            sorted_max_sharpe_weights = [item[2] for item in combined_data]
-            sorted_target_return_weights = [item[3] for item in combined_data]
-
-            plot_data = {
-                'Substrategy': sorted_substrategies,
-                'Weight (%)': [w * 100 for w in sorted_current_weights],
-                'Max Sharpe Weight (%)': [w * 100 for w in sorted_max_sharpe_weights],
-                'Target Return Weight (%)': [w * 100 for w in sorted_target_return_weights]
-            }
-            plot_df = pd.DataFrame(plot_data)
-
-            # 2. Bar Chart (Horizontal)
-            st.markdown("### Optimal Allocation Weights - Chart")
-            if not plot_df.empty:
-                fig_alloc_chart = go.Figure()
-                fig_alloc_chart.add_trace(go.Bar(
-                    y=plot_df['Substrategy'],
-                    x=plot_df['Weight (%)'],
-                    name='Current Weight',
-                    orientation='h',
-                    marker_color='rgb(26, 118, 255)' # Blue
-                ))
-                fig_alloc_chart.add_trace(go.Bar(
-                    y=plot_df['Substrategy'],
-                    x=plot_df['Max Sharpe Weight (%)'],
-                    name='Max Sharpe Weight',
-                    orientation='h',
-                    marker_color='rgb(34, 139, 34)' # ForestGreen
-                ))
-                fig_alloc_chart.add_trace(go.Bar(
-                    y=plot_df['Substrategy'],
-                    x=plot_df['Target Return Weight (%)'],
-                    name='Target Return Weight',
-                    orientation='h',
-                    marker_color='rgb(255, 127, 14)' # Orange
-                ))
-
-                fig_alloc_chart.update_layout(
-                    barmode='group',
-                    title_text='Comparison of Allocation Weights by Substrategy (Sorted by Current Weight)',
-                    yaxis_title='Substrategy', # Swapped with xaxis_title
-                    xaxis_title='Weight (%)',   # Swapped with yaxis_title
-                    legend_title='Weight Type',
-                    # Adjust height based on number of substrategies for horizontal bars
-                    height=max(400, len(sorted_substrategies) * 30 + 150), 
-                    yaxis=dict(autorange="reversed"), # To display highest current weight at the top
-                    bargap=0.15, # Adjust gap between groups of bars
-                    bargroupgap=0.1, # Adjust gap between bars within a group
-                    margin=dict(l=250, r=50, t=80, b=50) # Increased left margin for long substrategy names
-                )
-                st.plotly_chart(fig_alloc_chart, use_container_width=True)
-
-        
-        else:
-            # Silently skip allocation chart generation if data is not ready
-            pass
-
-        # --- END: New code for Bar Chart and Sum Check ---
+        # Skip entire Optimal Allocation Weights section per user request - go straight to Sub-Strategy Analysis
         
         # Add Strategy Analysis section for Sub Strategies
         try:
@@ -4140,164 +3985,206 @@ elif view_level == "Sub Strategies":
                     <div style='background-color:#f5f9fc; padding:10px; border-radius:8px; margin:15px 0 10px 0;'>
                         <span style='font-size:16px; font-weight:600; color:#1867a7;'>Sub-Strategy Analysis</span>
                     </div>
+                    <style>
+                    /* Additional CSS for Strategy Analysis tables */
+                    div[data-testid="column"] {
+                        width: 100% !important;
+                        flex: 1 1 50% !important;
+                    }
+                    div[data-testid="column"] .stDataFrame {
+                        width: 100% !important;
+                        min-width: 400px !important;
+                    }
+                    </style>
                     """, unsafe_allow_html=True)
                     
-                    # Create two columns for the analysis
-                    analysis_cols = st.columns(2)
+                    # Create Sharpe Ratio Bar Chart
+                    st.markdown("**Sub-Strategies by Sharpe Ratio**")
                     
-                    with analysis_cols[0]:
-                        st.markdown("**Sub-Strategies by Sharpe Ratio**")
+                    try:
+                        # Calculate Sharpe ratios for sub-strategies with sufficient data
+                        sharpe_ratios = []
+                        risk_free_rate = short_term_yield / 100.0  # Convert to decimal
+                        min_data_points = 5  # Minimum data points required
                         
-                        try:
-                            # Calculate Sharpe ratios for sub-strategies with sufficient data
-                            sharpe_ratios = []
-                            risk_free_rate = short_term_yield / 100.0  # Convert to decimal
-                            min_data_points = 5  # Minimum data points required
-                            
-                            for col in substrategy_columns:
-                                if col in aggregate_monthly_data.columns:
-                                    monthly_rets = aggregate_monthly_data[col].dropna()
-                                    
-                                    # Apply period-specific lookback for Sharpe ratio calculation
-                                    if period == "T12M RoA":
-                                        # Use last 12 months of data
-                                        monthly_rets = monthly_rets.tail(12)
-                                    elif period == "T6M RoA":
-                                        # Use last 6 months of data
-                                        monthly_rets = monthly_rets.tail(6)
-                                    # For ITD RoA, use all available data (no change)
-                                    
-                                    # Only include sub-strategies with sufficient data points
-                                    if len(monthly_rets) >= min_data_points:
-                                        # Calculate annualized return and volatility
-                                        cumulative_return = (1 + monthly_rets).prod() - 1
-                                        num_months = len(monthly_rets)
-                                        annual_return = (1 + cumulative_return) ** (12 / num_months) - 1
-                                        annual_vol = monthly_rets.std() * np.sqrt(12)
-                                        
-                                        # Calculate Sharpe ratio (exclude vol < 1%)
-                                        if annual_vol > 0 and annual_vol * 100 >= 1.0:  # Exclude vol < 1%
-                                            sharpe = (annual_return - risk_free_rate) / annual_vol
-                                            sharpe_ratios.append({
-                                                'Sub-Strategy': col,
-                                                'Sharpe Ratio': sharpe,
-                                                'Annual Return': annual_return * 100,
-                                                'Annual Vol': annual_vol * 100
-                                            })
-                            
-                            # Create DataFrame and sort by Sharpe ratio (descending)
-                            if sharpe_ratios:
-                                sharpe_df = pd.DataFrame(sharpe_ratios)
-                                sharpe_df = sharpe_df.sort_values('Sharpe Ratio', ascending=False)
+                        for col in substrategy_columns:
+                            if col in aggregate_monthly_data.columns:
+                                monthly_rets = aggregate_monthly_data[col].dropna()
                                 
-                                # Format for display
-                                display_df = sharpe_df.copy()
-                                display_df['Sharpe Ratio'] = display_df['Sharpe Ratio'].apply(lambda x: f"{x:.2f}")
-                                display_df['Annual Return'] = display_df['Annual Return'].apply(lambda x: f"{x:.1f}%")
-                                display_df['Annual Vol'] = display_df['Annual Vol'].apply(lambda x: f"{x:.1f}%")
-                                
-                                # Display the table (expanded to show all data)
-                                st.dataframe(display_df, use_container_width=True)
-                            else:
-                                st.info("No sub-strategy data available for Sharpe ratio calculation.")
-                                
-                        except Exception as e:
-                            st.error(f"Error calculating sub-strategy Sharpe ratios: {e}")
-                    
-                    with analysis_cols[1]:
-                        st.markdown("**Highest Sub-Strategy Correlations**")
-                        
-                        try:
-                            # Filter sub-strategies with sufficient data (at least 5 data points)
-                            min_data_points = 5
-                            valid_substrategy_columns = []
-                            
-                            for col in substrategy_columns:
-                                if col in aggregate_monthly_data.columns:
-                                    # Apply period-specific lookback for correlation calculation
-                                    monthly_data_col = aggregate_monthly_data[col].dropna()
-                                    if period == "T12M RoA":
-                                        # Use last 12 months of data
-                                        monthly_data_col = monthly_data_col.tail(12)
-                                    elif period == "T6M RoA":
-                                        # Use last 6 months of data
-                                        monthly_data_col = monthly_data_col.tail(6)
-                                    # For ITD RoA, use all available data (no change)
-                                    
-                                    non_null_count = len(monthly_data_col)
-                                    if non_null_count >= min_data_points:
-                                        valid_substrategy_columns.append(col)
-                            
-                            if len(valid_substrategy_columns) >= 2:
-                                # Get data for valid sub-strategies with period-specific lookback
-                                substrategy_data = aggregate_monthly_data[valid_substrategy_columns].copy()
-                                
-                                # Apply period-specific lookback to the correlation data
+                                # Apply period-specific lookback for Sharpe ratio calculation
                                 if period == "T12M RoA":
                                     # Use last 12 months of data
-                                    substrategy_data = substrategy_data.tail(12)
+                                    monthly_rets = monthly_rets.tail(12)
                                 elif period == "T6M RoA":
                                     # Use last 6 months of data
-                                    substrategy_data = substrategy_data.tail(6)
+                                    monthly_rets = monthly_rets.tail(6)
                                 # For ITD RoA, use all available data (no change)
                                 
-                                # Calculate correlation matrix
-                                corr_matrix = substrategy_data.corr()
-                                
-                                # Find highest correlations (excluding self-correlations)
-                                correlation_pairs = []
-                                for i in range(len(corr_matrix.columns)):
-                                    for j in range(i+1, len(corr_matrix.columns)):
-                                        strategy1 = corr_matrix.columns[i]
-                                        strategy2 = corr_matrix.columns[j]
-                                        correlation = corr_matrix.iloc[i, j]
-                                        
-                                        if not pd.isna(correlation):
-                                            correlation_pairs.append({
-                                                'Sub-Strategy Pair': f"{strategy1} ↔ {strategy2}",
-                                                'Correlation': correlation
-                                            })
-                                
-                                # Sort by absolute correlation (highest first)
-                                if correlation_pairs:
-                                    corr_df = pd.DataFrame(correlation_pairs)
-                                    corr_df = corr_df.sort_values('Correlation', key=abs, ascending=False)
+                                # Only include sub-strategies with sufficient data points
+                                if len(monthly_rets) >= min_data_points:
+                                    # Calculate annualized return and volatility
+                                    cumulative_return = (1 + monthly_rets).prod() - 1
+                                    num_months = len(monthly_rets)
+                                    annual_return = (1 + cumulative_return) ** (12 / num_months) - 1
+                                    annual_vol = monthly_rets.std() * np.sqrt(12)
                                     
-                                    # Format for display
-                                    display_corr_df = corr_df.copy()
-                                    display_corr_df['Correlation'] = display_corr_df['Correlation'].apply(lambda x: f"{x:.3f}")
-                                    
-                                    # Color code correlations
-                                    def color_correlation(val):
-                                        try:
-                                            num_val = float(val)
-                                            if abs(num_val) > 0.7:
-                                                return 'background-color: rgba(255, 99, 71, 0.3)'  # High correlation - red
-                                            elif abs(num_val) > 0.5:
-                                                return 'background-color: rgba(255, 165, 0, 0.3)'  # Medium correlation - orange
-                                            elif abs(num_val) > 0.3:
-                                                return 'background-color: rgba(255, 255, 0, 0.3)'  # Low correlation - yellow
-                                            else:
-                                                return 'background-color: rgba(144, 238, 144, 0.3)'  # Very low correlation - light green
-                                        except:
-                                            return ''
-                                    
-                                    styled_corr = display_corr_df.style.applymap(color_correlation, subset=['Correlation'])
-                                    st.dataframe(styled_corr, use_container_width=True)
-                                    
-                                    # Add legend
-                                    st.markdown("""
-                                    <div style='font-size:11px; color:#666; margin-top:5px;'>
-                                    🔴 High (>0.7) 🟠 Medium (0.5-0.7) 🟡 Low (0.3-0.5) 🟢 Very Low (<0.3)
-                                    </div>
-                                    """, unsafe_allow_html=True)
+                                    # Calculate Sharpe ratio (exclude vol < 1%)
+                                    if annual_vol > 0 and annual_vol * 100 >= 1.0:  # Exclude vol < 1%
+                                        sharpe = (annual_return - risk_free_rate) / annual_vol
+                                        sharpe_ratios.append({
+                                            'Sub-Strategy': col,
+                                            'Sharpe Ratio': sharpe,
+                                            'Annual Return': annual_return * 100,
+                                            'Annual Vol': annual_vol * 100
+                                        })
+                        
+                        # Create DataFrame and sort by Sharpe ratio (descending)
+                        if sharpe_ratios:
+                            sharpe_df = pd.DataFrame(sharpe_ratios)
+                            sharpe_df = sharpe_df.sort_values('Sharpe Ratio', ascending=False)
+                            
+                            # Create horizontal bar chart for Sharpe ratios
+                            fig_sharpe = go.Figure()
+                            
+                            # Color bars based on Sharpe ratio value
+                            colors = []
+                            for sharpe in sharpe_df['Sharpe Ratio']:
+                                if sharpe >= 1.0:
+                                    colors.append('rgb(34, 139, 34)')  # Green for good Sharpe
+                                elif sharpe >= 0.5:
+                                    colors.append('rgb(255, 165, 0)')  # Orange for moderate Sharpe
                                 else:
-                                    st.info("No valid correlation pairs found.")
-                            else:
-                                st.info(f"Need at least 2 sub-strategies with {min_data_points}+ data points for correlation analysis. Found {len(valid_substrategy_columns)} valid sub-strategies.")
+                                    colors.append('rgb(255, 99, 71)')  # Red for low Sharpe
+                            
+                            fig_sharpe.add_trace(go.Bar(
+                                y=sharpe_df['Sub-Strategy'],
+                                x=sharpe_df['Sharpe Ratio'],
+                                orientation='h',
+                                marker_color=colors,
+                                text=[f"{x:.2f}" for x in sharpe_df['Sharpe Ratio']],
+                                textposition='outside',
+                                hovertemplate='<b>%{y}</b><br>Sharpe Ratio: %{x:.2f}<br>Annual Return: %{customdata[0]:.1f}%<br>Annual Vol: %{customdata[1]:.1f}%<extra></extra>',
+                                customdata=list(zip(sharpe_df['Annual Return'], sharpe_df['Annual Vol']))
+                            ))
+                            
+                            fig_sharpe.update_layout(
+                                title=f'Sub-Strategies Ranked by Sharpe Ratio ({period})',
+                                xaxis_title='Sharpe Ratio',
+                                yaxis_title='Sub-Strategy',
+                                height=max(400, len(sharpe_df) * 35 + 100),
+                                yaxis=dict(autorange="reversed"),
+                                margin=dict(l=250, r=100, t=80, b=50),
+                                showlegend=False
+                            )
+                            
+                            st.plotly_chart(fig_sharpe, use_container_width=True)
+                            
+                            # Add legend for colors
+                            st.markdown("""
+                            <div style='font-size:11px; color:#666; margin-top:5px;'>
+                            🟢 Excellent (≥1.0) 🟠 Good (0.5-1.0) 🔴 Below Average (<0.5)
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.info("No sub-strategy data available for Sharpe ratio calculation.")
+                            
+                    except Exception as e:
+                        st.error(f"Error calculating sub-strategy Sharpe ratios: {e}")
+                    
+                    st.markdown("---")  # Add separator
+                    st.markdown("**Highest Sub-Strategy Correlations**")
+                    
+                    try:
+                        # Filter sub-strategies with sufficient data (at least 5 data points)
+                        min_data_points = 5
+                        valid_substrategy_columns = []
+                        
+                        for col in substrategy_columns:
+                            if col in aggregate_monthly_data.columns:
+                                # Apply period-specific lookback for correlation calculation
+                                monthly_data_col = aggregate_monthly_data[col].dropna()
+                                if period == "T12M RoA":
+                                    # Use last 12 months of data
+                                    monthly_data_col = monthly_data_col.tail(12)
+                                elif period == "T6M RoA":
+                                    # Use last 6 months of data
+                                    monthly_data_col = monthly_data_col.tail(6)
+                                # For ITD RoA, use all available data (no change)
                                 
-                        except Exception as e:
-                            st.error(f"Error calculating sub-strategy correlations: {e}")
+                                non_null_count = len(monthly_data_col)
+                                if non_null_count >= min_data_points:
+                                    valid_substrategy_columns.append(col)
+                        
+                        if len(valid_substrategy_columns) >= 2:
+                            # Get data for valid sub-strategies with period-specific lookback
+                            substrategy_data = aggregate_monthly_data[valid_substrategy_columns].copy()
+                            
+                            # Apply period-specific lookback to the correlation data
+                            if period == "T12M RoA":
+                                # Use last 12 months of data
+                                substrategy_data = substrategy_data.tail(12)
+                            elif period == "T6M RoA":
+                                # Use last 6 months of data
+                                substrategy_data = substrategy_data.tail(6)
+                            # For ITD RoA, use all available data (no change)
+                            
+                            # Calculate correlation matrix
+                            corr_matrix = substrategy_data.corr()
+                            
+                            # Find highest correlations (excluding self-correlations)
+                            correlation_pairs = []
+                            for i in range(len(corr_matrix.columns)):
+                                for j in range(i+1, len(corr_matrix.columns)):
+                                    strategy1 = corr_matrix.columns[i]
+                                    strategy2 = corr_matrix.columns[j]
+                                    correlation = corr_matrix.iloc[i, j]
+                                    
+                                    if not pd.isna(correlation):
+                                        correlation_pairs.append({
+                                            'Sub-Strategy Pair': f"{strategy1} ↔ {strategy2}",
+                                            'Correlation': correlation
+                                        })
+                            
+                            # Sort by absolute correlation (highest first)
+                            if correlation_pairs:
+                                corr_df = pd.DataFrame(correlation_pairs)
+                                corr_df = corr_df.sort_values('Correlation', key=abs, ascending=False)
+                                
+                                # Format for display
+                                display_corr_df = corr_df.copy()
+                                display_corr_df['Correlation'] = display_corr_df['Correlation'].apply(lambda x: f"{x:.3f}")
+                                
+                                # Color code correlations
+                                def color_correlation(val):
+                                    try:
+                                        num_val = float(val)
+                                        if abs(num_val) > 0.7:
+                                            return 'background-color: rgba(255, 99, 71, 0.3)'  # High correlation - red
+                                        elif abs(num_val) > 0.5:
+                                            return 'background-color: rgba(255, 165, 0, 0.3)'  # Medium correlation - orange
+                                        elif abs(num_val) > 0.3:
+                                            return 'background-color: rgba(255, 255, 0, 0.3)'  # Low correlation - yellow
+                                        else:
+                                            return 'background-color: rgba(144, 238, 144, 0.3)'  # Very low correlation - light green
+                                    except:
+                                        return ''
+                                
+                                styled_corr = display_corr_df.style.applymap(color_correlation, subset=['Correlation'])
+                                st.dataframe(styled_corr, use_container_width=True, height=400)
+                                
+                                # Add legend
+                                st.markdown("""
+                                <div style='font-size:11px; color:#666; margin-top:5px;'>
+                                🔴 High (>0.7) 🟠 Medium (0.5-0.7) 🟡 Low (0.3-0.5) 🟢 Very Low (<0.3)
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.info("No valid correlation pairs found.")
+                        else:
+                            st.info(f"Need at least 2 sub-strategies with {min_data_points}+ data points for correlation analysis. Found {len(valid_substrategy_columns)} valid sub-strategies.")
+                            
+                    except Exception as e:
+                        st.error(f"Error calculating sub-strategy correlations: {e}")
             else:
                 st.info("Aggregate Monthly RoA.xlsx not found for sub-strategy analysis.")
                 
