@@ -2308,71 +2308,9 @@ try:
         weight_sum = df_sub['Weight'].sum()
         if weight_sum > 0:
             df_sub['Weight'] = df_sub['Weight'] / weight_sum
-        else:
-            # Try to load default portfolio_holdings.xlsx file if it exists
-            default_portfolio_file = "portfolio_holdings.xlsx"
-            if os.path.exists(default_portfolio_file):
-                try:
-                    st.sidebar.info("🔄 Loading default portfolio data...")
-                    holdings_df = pd.read_excel(default_portfolio_file)
-                    holdings_df.columns = [col.strip() for col in holdings_df.columns]
-                    
-                    # Handle Substrategy column variations
-                    if "Sub Strategy" in holdings_df.columns:
-                        holdings_df = holdings_df.rename(columns={"Sub Strategy": "Substrategy"})
-                    
-                    # Filter out HEDGE and CURRENCY
-                    holdings_df = holdings_df[~holdings_df["Strategy"].str.contains("HEDGE|CURRENCY", case=False, na=False)]
-                    
-                    # Remove rows with missing Admin Net MV
-                    holdings_df = holdings_df[holdings_df["Admin Net MV"].notna()]
-                    
-                    # Calculate weights
-                    total_mv = holdings_df["Admin Net MV"].sum()
-                    holdings_df["Weight"] = holdings_df["Admin Net MV"] / total_mv
-                    
-                    # Use the default portfolio data
-                    df = holdings_df
-                    st.sidebar.success("✅ Default portfolio data loaded successfully!")
-                    
-                    # Calculate strategy weights from default data
-                    main_strategies = ["AIRCRAFT F1", "CMBS F1", "SHORT TERM", "CLO F1", "ABS F1"]
-                    strategy_weights = {}
-                    
-                    if 'Strategy' in df.columns and 'Admin Net MV' in df.columns:
-                        strategy_agg = df.groupby('Strategy').agg({
-                            'Admin Net MV': 'sum'
-                        }).reset_index()
-                        
-                        strategy_agg = strategy_agg[strategy_agg['Strategy'].isin(main_strategies)]
-                        
-                        total_mv = strategy_agg['Admin Net MV'].sum()
-                        if total_mv > 0:
-                            for _, row in strategy_agg.iterrows():
-                                strategy_weights[row['Strategy']] = row['Admin Net MV'] / total_mv
-                        
-                        # Fill in missing strategies with zero weight
-                        for strategy in main_strategies:
-                            if strategy not in strategy_weights:
-                                strategy_weights[strategy] = 0.0
-                    else:
-                        strategy_weights = default_weights.copy()
-                        
-                except Exception as e:
-                    st.sidebar.error(f"❌ Error loading default portfolio file: {e}")
-                    # Fall back to empty DataFrame
-                    df = pd.DataFrame(columns=['Strategy', 'Substrategy', 'Admin Net MV', 'Weight'])
-                    strategy_weights = default_weights.copy()
-            else:
-                # No uploaded file, no backup data, and no default file available
-                st.sidebar.warning("⚠️ No portfolio holdings data available. Please upload a portfolio holdings file.")
-                
-                # Create a default empty DataFrame with required columns
-                df = pd.DataFrame(columns=['Strategy', 'Substrategy', 'Admin Net MV', 'Weight'])
-                
-                # Use default weights for main strategies
-                strategy_weights = default_weights.copy()
-            df_sub['Contribution'] = 0.0
+            
+        # Calculate contribution
+        df_sub['Contribution'] = df_sub['Weight'] * df_sub['RoA']
             
 except Exception as e:
     # Log the error to the sidebar instead of the main page
