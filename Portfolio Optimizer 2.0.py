@@ -3856,6 +3856,9 @@ elif view_level == "Sub Strategies":
             st.error("❌ Sub-strategy data not available - please ensure data is loaded above")
         
         # Efficient Frontier section completely removed per user request
+        
+        # Get list of substrategies for data processing
+        substrategies = df_sub['Substrategy'].tolist()
             
         # Load monthly ROA data
         try:
@@ -3942,16 +3945,7 @@ elif view_level == "Sub Strategies":
             portfolio_vol = portfolio_vol_original  # Using original volatility calculation
             sharpe_ratio = (portfolio_return - short_term_yield / 100.0) / portfolio_vol if portfolio_vol > 0 else 0
         
-        # ----------------------------------------------------------------
-        # SUB STRATEGIES OPTIMIZATION - SEPARATE FROM MAIN STRATEGIES
-        # This is an independent calculation that doesn't affect Main Strategies
-        # ----------------------------------------------------------------
-        
-        # Initialize optimization variables
-        max_sharpe_weights_array = np.zeros(len(substrategies))
-        target_weights_array = np.zeros(len(substrategies))
-        max_sharpe_return, max_sharpe_vol = 0, 0
-        target_return_value, target_vol = 0, 0
+        # All optimization variables removed per user request
         
         # Data loading buttons removed per user request
         
